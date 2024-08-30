@@ -1,0 +1,36 @@
+{
+  "name": "react-native-record-speech",
+  "version": "1.0.0",
+  "description": "A package to record speech",
+  "main": "index.js",
+  "author": "Tom Langan (https://github.com/tomlangan)",
+  "homepage": "https://github.com/tomlangan/react-native-record-speech",
+  "files": [
+    "README.md",
+    "LICENSE",
+    "index.js",
+    "index.d.ts",
+    "RNRecordSpeech.podspec",
+    "android/*",
+    "ios/RNRecordSpeech.m",
+    "ios/RNRecordSpeech.h",
+    "ios/RNRecordSpeech.xcodeproj",
+  ],
+  "keywords": [
+    "react-native",
+    "microphone",
+    "record",
+    "audio",
+    "input",
+    "speech"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:tomlangan/react-native-sound-level.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tomlangan/react-native-record-speech/issues"
+  },
+  "nativePackage": true
+}
