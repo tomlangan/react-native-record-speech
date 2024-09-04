@@ -13,16 +13,27 @@ typedef struct {
     UInt32                      bufferByteSize;
     SInt64                      mCurrentPacket;
     bool                        mIsRunning;
+    UInt32                      frameNumber;
 } AQRecordState;
 
-@interface RNAudioRecordAndLevel : RCTEventEmitter <RCTBridgeModule, AVAudioRecorderDelegate>
-    @property (nonatomic, assign) AQRecordState recordState;
-    @property (nonatomic, strong) NSString* filePath;
-    @property (nonatomic, strong) AVAudioRecorder *audioRecorder;
-    @property (nonatomic, strong) CADisplayLink *progressUpdateTimer;
-    @property (nonatomic, assign) int frameId;
-    @property (nonatomic, assign) int progressUpdateInterval;
-    @property (nonatomic, strong) NSDate *prevProgressUpdateTime;
-    @property (nonatomic, strong) AVAudioSession *recordSession;
-@end
+#ifdef RCT_NEW_ARCH_ENABLED
+#import "RNRecordSpeechSpec.h"
 
+@interface RNRecordSpeech : NSObject <NativeRecordSpeechSpec>
+#else
+#import <React/RCTBridgeModule.h>
+
+@interface RNRecordSpeech : RCTEventEmitter <RCTBridgeModule, AVAudioRecorderDelegate>
+#endif
+
+@property (nonatomic, assign) AQRecordState recordState;
+@property (nonatomic, strong) NSString* filePath;
+@property (nonatomic, strong) CADisplayLink *progressUpdateTimer;
+@property (nonatomic, assign) int progressUpdateInterval;
+@property (nonatomic, strong) NSDate *prevProgressUpdateTime;
+
+- (void)init:(NSDictionary *)options;
+- (void)start;
+- (void)stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject;
+
+@end

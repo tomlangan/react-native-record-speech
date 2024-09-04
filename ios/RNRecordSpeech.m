@@ -1,10 +1,12 @@
-#import "RNAudioRecordAndLevel.h"
+#import "RNRecordSpeech.h"
+#import <React/RCTEventEmitter.h>
+#import <React/RCTBridgeModule.h>
 #import <React/RCTConvert.h>
 #import <React/RCTBridge.h>
 #import <React/RCTUtils.h>
 #import <React/RCTEventDispatcher.h>
 
-@implementation RNAudioRecordAndLevel
+@implementation RNRecordSpeech
 
 RCT_EXPORT_MODULE();
 
@@ -23,18 +25,13 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)options)
 
     _recordState.bufferByteSize = 2048;
     _recordState.mSelf = self;
+    _recordState.frameNumber = 0;
 
     NSString *fileName = options[@"wavFile"] == nil ? @"audio.wav" : options[@"wavFile"];
     NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     _filePath = [NSString stringWithFormat:@"%@/%@", docDir, fileName];
     
     _progressUpdateInterval = [options[@"monitorInterval"] intValue] ?: 250;
-}
-
-RCT_EXPORT_METHOD(on:(NSString *)eventName)
-{
-    // This method is just for logging purposes on the native side
-    RCTLogInfo(@"Registered listener for event: %@", eventName);
 }
 
 RCT_EXPORT_METHOD(start)
@@ -45,6 +42,7 @@ RCT_EXPORT_METHOD(start)
 
     _recordState.mIsRunning = true;
     _recordState.mCurrentPacket = 0;
+    _recordState.frameNumber = 0;
 
     CFURLRef url = CFURLCreateWithString(kCFAllocatorDefault, (CFStringRef)_filePath, NULL);
     AudioFileCreateWithURL(url, kAudioFileWAVEType, &_recordState.mDataFormat, kAudioFileFlags_EraseFile, &_recordState.mAudioFile);
@@ -56,8 +54,6 @@ RCT_EXPORT_METHOD(start)
         AudioQueueEnqueueBuffer(_recordState.mQueue, _recordState.mBuffers[i], 0, NULL);
     }
     AudioQueueStart(_recordState.mQueue, NULL);
-
-    [self startProgressTimer];
 }
 
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
@@ -69,7 +65,6 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejec
         AudioQueueDispose(_recordState.mQueue, true);
         AudioFileClose(_recordState.mAudioFile);
     }
-    [self stopProgressTimer];
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
     
     resolve(_filePath);
@@ -80,54 +75,7 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejec
 
 - (NSArray<NSString *> *)supportedEvents
 {
-    return @[@"data"];
-}
-
-- (void)startProgressTimer
-{
-    [self stopProgressTimer];
-    self.progressUpdateTimer = [CADisplayLink displayLinkWithTarget:self selector:@selector(sendProgressUpdate)];
-    [self.progressUpdateTimer addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
-}
-
-- (void)stopProgressTimer
-{
-    [self.progressUpdateTimer invalidate];
-    self.progressUpdateTimer = nil;
-}
-
-- (void)sendProgressUpdate
-{
-    if (!_recordState.mIsRunning) {
-        return;
-    }
-
-    if (self.prevProgressUpdateTime == nil ||
-        (([self.prevProgressUpdateTime timeIntervalSinceNow] * -1000.0) >= self.progressUpdateInterval)) {
-        self.frameId++;
-        
-        float currentLevel = [self getCurrentAudioLevel];
-        
-        [self sendEventWithName:@"level" body:@{
-            @"id": @(self.frameId),
-            @"value": @(currentLevel),
-            @"rawValue": @(currentLevel)
-        }];
-
-        self.prevProgressUpdateTime = [NSDate date];
-    }
-}
-
-- (float)getCurrentAudioLevel
-{
-    float currentLevel = -160.0f;
-    if (_recordState.mQueue != NULL) {
-        UInt32 propertySize = sizeof(AudioQueueLevelMeterState);
-        AudioQueueLevelMeterState levelMeter;
-        AudioQueueGetProperty(_recordState.mQueue, kAudioQueueProperty_CurrentLevelMeterDB, &levelMeter, &propertySize);
-        currentLevel = levelMeter.mAveragePower;
-    }
-    return currentLevel;
+    return @[@"frame"];
 }
 
 void HandleInputBuffer(void *inUserData,
@@ -163,13 +111,19 @@ void HandleInputBuffer(void *inUserData,
         currentLevel = levelMeter.mAveragePower;
     }
 
-    // Encode audio data and include the level in the event payload
+    // Encode audio data
     NSData *data = [NSData dataWithBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
     NSString *str = [data base64EncodedStringWithOptions:0];
-    [pRecordState->mSelf sendEventWithName:@"data" body:@{
+
+    // Send a single event with frame number, audio data, and level
+    [pRecordState->mSelf sendEventWithName:@"frame" body:@{
+        @"frameNumber": @(pRecordState->frameNumber),
         @"audioData": str,
         @"level": @(currentLevel)
     }];
+
+    // Increment frame number
+    pRecordState->frameNumber++;
 
     // Re-enqueue the buffer for continued recording
     AudioQueueEnqueueBuffer(pRecordState->mQueue, inBuffer, 0, NULL);
@@ -189,9 +143,6 @@ void HandleInputBuffer(void *inUserData,
         AudioQueueDispose(_recordState.mQueue, true);
         _recordState.mQueue = NULL;
     }
-
-    // Stop the progress timer if it is still running
-    [self stopProgressTimer];
 }
 
 @end
