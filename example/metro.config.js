@@ -4,6 +4,7 @@ const { getConfig } = require('react-native-builder-bob/metro-config');
 const pkg = require('../package.json');
 
 const root = path.resolve(__dirname, '..');
+const nodeModulesPath = path.resolve(root, 'node_modules');
 
 /**
  * Metro configuration
@@ -11,8 +12,35 @@ const root = path.resolve(__dirname, '..');
  *
  * @type {import('metro-config').MetroConfig}
  */
-module.exports = getConfig(getDefaultConfig(__dirname), {
-  root,
-  pkg,
-  project: __dirname,
-});
+module.exports = (async () => {
+  const defaultConfig = await getDefaultConfig(__dirname);
+  const builderBobConfig = getConfig(defaultConfig, {
+    root,
+    pkg,
+    project: __dirname,
+    resolver: {
+      sourceExts: ['js', 'json', 'ts', 'tsx', 'jsx'],
+      nodeModulesPaths: [nodeModulesPath],
+    },
+    watchFolders: [root],
+  });
+
+  return {
+    ...builderBobConfig,
+    resolver: {
+      ...builderBobConfig.resolver,
+      extraNodeModules: new Proxy(
+        {},
+        {
+          get: (target, name) => {
+            return path.join(nodeModulesPath, name);
+          },
+        }
+      ),
+    },
+    watchFolders: [
+      ...builderBobConfig.watchFolders,
+      nodeModulesPath,
+    ],
+  };
+})();

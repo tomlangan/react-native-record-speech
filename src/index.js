@@ -1,3 +1,5 @@
+console.log("RNRS index.js")
+
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
 import { SpeechDetection, defaultSpeechRecorderConfig } from './SpeechDetection';
 
