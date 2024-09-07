@@ -1,4 +1,3 @@
-import { Platform, NativeEventEmitter, NativeModules } from 'react-native';
 import * as lamejs from 'lamejs';
 import {
   arrayBufferToBase64,
@@ -8,9 +7,7 @@ import {
 import RNFS from 'react-native-fs';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from './utils/eventemitter';
-
-const RNRecordSpeech = NativeModules.RNRecordSpeech;
-const eventEmitter = new NativeEventEmitter(RNRecordSpeech);
+import RNRecordSpeech from './RNRecordSpeech';
 
 export const defaultSpeechRecorderConfig = {
   sampleRate: 44100,

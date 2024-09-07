@@ -75,6 +75,7 @@
     "react": "18.3.1",
     "react-native": "0.75.2",
     "react-native-builder-bob": "^0.30.0",
+    "react-native-fs": "^2.20.0",
     "release-it": "^15.0.0",
     "turbo": "^1.10.7",
     "typescript": "^5.2.2"
@@ -84,7 +85,8 @@
   },
   "peerDependencies": {
     "react": "*",
-    "react-native": "*"
+    "react-native": "*",
+    "react-native-fs": "^2.20.0"
   },
   "workspaces": [
     "example"
@@ -171,7 +173,6 @@
   "dependencies": {
     "buffer": "^6.0.3",
     "lamejs": "^1.2.1",
-    "react-native-fs": "^2.20.0",
     "uuid": "^10.0.0"
   }
 }

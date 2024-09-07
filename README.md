@@ -6,7 +6,9 @@ Can be used to help user to adjust microphone sensitivity.
 Install the npm package and link it to your project:
 
 ```
-npm i react-native-sound-level --save
+npm install react-native-record-speech react-native-fs
+# or
+yarn add react-native-record-speech react-native-fs
 ```
 
 On *iOS* you need to add a usage description to `Info.plist`:
