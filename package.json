@@ -172,7 +172,7 @@
   },
   "dependencies": {
     "buffer": "^6.0.3",
-    "lamejs": "^1.2.1",
+    "lamejs": "github:zhuker/lamejs",
     "uuid": "^10.0.0"
   }
 }

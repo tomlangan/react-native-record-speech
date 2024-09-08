@@ -1,4 +1,3 @@
-import * as lamejs from 'lamejs';
 import {
   arrayBufferToBase64,
   concatenateBase64BlobsToArrayBuffer,
@@ -8,6 +7,7 @@ import RNFS from 'react-native-fs';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from './utils/eventemitter';
 import RNRecordSpeech from './RNRecordSpeech';
+import lamejs from 'lamejs';
 
 export const defaultSpeechRecorderConfig = {
   sampleRate: 44100,
@@ -61,11 +61,11 @@ export class SpeechDetection extends EventEmitter {
   }
 
   setupEventListeners() {
-    eventEmitter.addListener('frame', this.onFrame);
+    this.on('frame', this.onFrame);
   }
 
   removeEventListeners() {
-    eventEmitter.removeAllListeners('frame');
+    this.off('frame');
   }
 
   onFrame = (data) => {
