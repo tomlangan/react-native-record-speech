@@ -1,20 +1,11 @@
-const path = require('path');
-const pkg = require('../package.json');
-const { configureProjects } = require('react-native-test-app');
+const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
 
-module.exports = {
-  project: configureProjects({
-    android: {
-      sourceDir: 'android',
-    },
-    ios: {
-      sourceDir: 'ios',
-      automaticPodsInstallation: false,
-    },
-  }),
-  dependencies: {
-    [pkg.name]: {
-      root: path.join(__dirname, '..'),
-    },
-  },
-};
+/**
+ * Metro configuration
+ * https://reactnative.dev/docs/metro
+ *
+ * @type {import('metro-config').MetroConfig}
+ */
+const config = {};
+
+module.exports = mergeConfig(getDefaultConfig(__dirname), config);
