@@ -325,6 +325,24 @@ export class SpeechDetection extends EventEmitter {
     return file;
   }
 
+  setFinalDataCallback() {
+    this.cancelFinalDataCallback();
+
+    this.finalDataCallbackTimeout = setTimeout(() => {
+      this.config.debug && console.log("Final data callback timeout");
+      this.setSpeakingState('no_speech');
+      this.onSendSpeechData();
+    }, this.config.timeSlice * 2);
+  }
+
+  cancelFinalDataCallback() {
+    if (this.finalDataCallbackTimeout) {
+      this.config.debug && console.log("Cancel final data callback");
+      clearTimeout(this.finalDataCallbackTimeout);
+      this.finalDataCallbackTimeout = null;
+    }
+  }
+  
   onSendSpeechData = async () => {
     console.log('onSendSpeechData length=', this.chunks.length);
 

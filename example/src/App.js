@@ -51,12 +51,6 @@ const App = () => {
     <ScrollView style={styles.container}>
       <Text style={styles.title}>Speech Detection Example</Text>
 
-      <TouchableOpacity style={styles.button} onPress={toggleRecording}>
-        <Text style={styles.buttonText}>
-          {isRecording ? 'Stop Recording' : 'Start Recording'}
-        </Text>
-      </TouchableOpacity>
-
       <View style={styles.statusContainer}>
         <Text>Recording: {isRecording ? 'Yes' : 'No'}</Text>
         <Text>Speaking: {isSpeaking ? 'Yes' : 'No'}</Text>
@@ -74,6 +68,13 @@ const App = () => {
           <Text style={styles.audioButtonText}>Play Recording {index + 1}</Text>
         </TouchableOpacity>
       ))}
+
+      <TouchableOpacity style={styles.button} onPress={toggleRecording}>
+        <Text style={styles.buttonText}>
+          {isRecording ? 'Stop Recording' : 'Start Recording'}
+        </Text>
+      </TouchableOpacity>
+
     </ScrollView>
   );
 };
@@ -82,6 +83,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 16,
+    marginTop: 50,
   },
   title: {
     fontSize: 24,
@@ -97,7 +99,7 @@ const styles = StyleSheet.create({
   },
   button: {
     backgroundColor: '#007AFF',
-    padding: 12,
+    padding: 6,
     borderRadius: 8,
     alignItems: 'center',
     marginBottom: 16,
@@ -108,7 +110,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   statusContainer: {
-    marginBottom: 16,
+    marginBottom: 5,
     padding: 10,
     backgroundColor: '#f0f0f0',
     borderRadius: 8,
