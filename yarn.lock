@@ -8392,7 +8392,7 @@ __metadata:
 
 "lamejs@github:zhuker/lamejs":
   version: 1.2.1
-  resolution: "lamejs@git+ssh://git@github.com/zhuker/lamejs.git#commit=582bbba6a12f981b984d8fb9e1874499fed85675"
+  resolution: "lamejs@https://github.com/zhuker/lamejs.git#commit=582bbba6a12f981b984d8fb9e1874499fed85675"
   dependencies:
     use-strict: 1.0.1
   checksum: fa829e0c170a65573e653b4d908a44aaf06a50e1bbade3b1217a300a03ccd59a537e294e2d924a584f9d70c7726a12d4c3af9c675436d48d08be5fb94b5eb400
@@ -10460,8 +10460,24 @@ __metadata:
     react-native: 0.75.2
     react-native-builder-bob: ^0.30.0
     react-native-fs: ^2.20.0
+    react-native-record-speech: "file:../"
   languageName: unknown
   linkType: soft
+
+"react-native-record-speech@file:../::locator=react-native-record-speech-example%40workspace%3Aexample":
+  version: 1.0.0
+  resolution: "react-native-record-speech@file:../#../::hash=c6c33f&locator=react-native-record-speech-example%40workspace%3Aexample"
+  dependencies:
+    buffer: ^6.0.3
+    lamejs: "github:zhuker/lamejs"
+    uuid: ^10.0.0
+  peerDependencies:
+    react: "*"
+    react-native: "*"
+    react-native-fs: ^2.20.0
+  checksum: adb5d7e6107a5315362579b88edaea997828e2d805628bb5a2982581dea0d55d632c3980d573ab7b858913ae1e1bdf31092ccf8e3f5334fe37acfafaa8168c84
+  languageName: node
+  linkType: hard
 
 "react-native-record-speech@workspace:.":
   version: 0.0.0-use.local
@@ -11234,14 +11250,14 @@ __metadata:
   linkType: hard
 
 "serve-static@npm:^1.13.1":
-  version: 1.15.0
-  resolution: "serve-static@npm:1.15.0"
+  version: 1.16.0
+  resolution: "serve-static@npm:1.16.0"
   dependencies:
     encodeurl: ~1.0.2
     escape-html: ~1.0.3
     parseurl: ~1.3.3
     send: 0.18.0
-  checksum: af57fc13be40d90a12562e98c0b7855cf6e8bd4c107fe9a45c212bf023058d54a1871b1c89511c3958f70626fff47faeb795f5d83f8cf88514dbaeb2b724464d
+  checksum: a479dfe7e9fa7e8cb3ceccb0d944a3c72bb8f88d78472e30989f58fe15a92cfc909ab05a5c7cda2d1a6aa2663ab503ad1e2f40653740346e53e72b3ba41b6951
   languageName: node
   linkType: hard
 
