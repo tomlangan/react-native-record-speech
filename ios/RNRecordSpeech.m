@@ -141,19 +141,21 @@ void HandleInputBuffer(void *inUserData,
         pRecordState->mCurrentPacket += inNumPackets;
     }
 
+    NSData *data = [NSData dataWithBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
+
     NSDictionary *result = @{
         @"speechProbability": @(0.0f),
         @"info": @{@"level": @(-160.0f)}
     };
     
     if ([pRecordState->detectionMethod isEqualToString:@"volume_threshold"]) {
-        result = [(id)pRecordState->mSelf detectSpeechWithLevel:audioData];
+        // Calculate speech probability based on volume threshold
+        result = [pRecordState->mSelf detectSpeechWithLevel:data];
     } else {
         throwRNException(@"Invalid detection method", 1);
     }
 
     // Encode audio data
-    NSData *data = [NSData dataWithBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
     NSString *str = [data base64EncodedStringWithOptions:0];
 
     // Send a single event with frame number, audio data, speech probability, and debug info

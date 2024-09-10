@@ -11,12 +11,8 @@ const root = path.resolve(__dirname, '..');
  *
  * @type {import('metro-config').MetroConfig}
  */
-const config = getConfig(getDefaultConfig(__dirname), {
+module.exports = getConfig(getDefaultConfig(__dirname), {
   root,
   pkg,
   project: __dirname,
 });
-
-console.log("config", JSON.stringify(config, null, 2));
-
-module.exports = config;
