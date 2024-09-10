@@ -5,6 +5,7 @@
 #import <React/RCTBridge.h>
 #import <React/RCTUtils.h>
 #import <React/RCTEventDispatcher.h>
+#import "AudioProcessing.h"
 
 @implementation RNRecordSpeech
 
@@ -22,6 +23,8 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)options)
     _recordState.mDataFormat.mReserved          = 0;
     _recordState.mDataFormat.mFormatID          = kAudioFormatLinearPCM;
     _recordState.mDataFormat.mFormatFlags       = _recordState.mDataFormat.mBitsPerChannel == 8 ? kLinearPCMFormatFlagIsPacked : (kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked);
+    _recordState.detectionMethod                = options[@"detectionMethod"] ?: @"volume_threshold";
+    _recordState.detectionParams                = options[@"detectionParams"];
 
     _recordState.bufferByteSize = 2048;
     _recordState.mSelf = self;
@@ -78,6 +81,41 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejec
     return @[@"frame"];
 }
 
+void throwRNException(NSString *message, NSInteger code) {
+    NSDictionary *userInfo = @{
+        NSLocalizedDescriptionKey: message
+    };
+    NSError *error = [NSError errorWithDomain:@"RNRecordSpeechErrorDomain"
+                                         code:code
+                                     userInfo:userInfo];
+    RCTFatal(error);
+}
+
+// Take a raw buffer, calculate the audio level, and return a speech probability
+- (float)detectSpeechWithLevel:(NSData *)data
+{
+    float defaultThreshold = -30.0f;
+
+    // Get the volume threshold from the options or use the default
+    float threshold = [_recordState.detectionParams[@"threshold"] floatValue]?: defaultThreshold;
+
+    // Calculate the current audio level using our new utility function
+    float currentLevel = calculateAudioLevel(data, _recordState.mDataFormat);
+
+    // Simple speech detection based on volume threshold
+    float speechProbability = (currentLevel > threshold) ? 0.8f : 0.2f;  // Simplified example
+
+    NSDictionary *result = @{
+        @"speechProbability": @(speechProbability),
+        @"info": @{
+            @"level": @(currentLevel),
+        }
+    };
+
+    // Assuming this is part of a method that returns an NSDictionary
+    return result;
+}
+
 void HandleInputBuffer(void *inUserData,
                        AudioQueueRef inAQ,
                        AudioQueueBufferRef inBuffer,
@@ -103,23 +141,27 @@ void HandleInputBuffer(void *inUserData,
         pRecordState->mCurrentPacket += inNumPackets;
     }
 
-    // Calculate the current audio level
-    float currentLevel = -160.0f;
-    UInt32 propertySize = sizeof(AudioQueueLevelMeterState);
-    AudioQueueLevelMeterState levelMeter;
-    if (AudioQueueGetProperty(pRecordState->mQueue, kAudioQueueProperty_CurrentLevelMeterDB, &levelMeter, &propertySize) == noErr) {
-        currentLevel = levelMeter.mAveragePower;
+    NSDictionary *result = @{
+        @"speechProbability": @(0.0f),
+        @"info": @{@"level": @(-160.0f)}
+    };
+    
+    if ([pRecordState->detectionMethod isEqualToString:@"volume_threshold"]) {
+        result = [(id)pRecordState->mSelf detectSpeechWithLevel:audioData];
+    } else {
+        throwRNException(@"Invalid detection method", 1);
     }
 
     // Encode audio data
     NSData *data = [NSData dataWithBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
     NSString *str = [data base64EncodedStringWithOptions:0];
 
-    // Send a single event with frame number, audio data, and level
+    // Send a single event with frame number, audio data, speech probability, and debug info
     [pRecordState->mSelf sendEventWithName:@"frame" body:@{
         @"frameNumber": @(pRecordState->frameNumber),
         @"audioData": str,
-        @"level": @(currentLevel)
+        @"speechProbability": result[@"speechProbability"],
+        @"info": result[@"info"]
     }];
 
     // Increment frame number

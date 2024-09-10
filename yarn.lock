@@ -10466,7 +10466,7 @@ __metadata:
 
 "react-native-record-speech@file:../::locator=react-native-record-speech-example%40workspace%3Aexample":
   version: 1.0.0
-  resolution: "react-native-record-speech@file:../#../::hash=c6c33f&locator=react-native-record-speech-example%40workspace%3Aexample"
+  resolution: "react-native-record-speech@file:../#../::hash=12cea7&locator=react-native-record-speech-example%40workspace%3Aexample"
   dependencies:
     buffer: ^6.0.3
     lamejs: "github:zhuker/lamejs"
@@ -10475,7 +10475,7 @@ __metadata:
     react: "*"
     react-native: "*"
     react-native-fs: ^2.20.0
-  checksum: adb5d7e6107a5315362579b88edaea997828e2d805628bb5a2982581dea0d55d632c3980d573ab7b858913ae1e1bdf31092ccf8e3f5334fe37acfafaa8168c84
+  checksum: 63b0ee1c55edb214a8a1059f1821e90cc38e5d03ec11333fda1f31bbdd134bcc69759c6ed1feeb8e79fb147953c17b9ff778e67ac805025747d583979a48ed7d
   languageName: node
   linkType: hard
 

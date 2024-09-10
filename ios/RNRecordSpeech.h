@@ -14,6 +14,8 @@ typedef struct {
     SInt64                      mCurrentPacket;
     bool                        mIsRunning;
     UInt32                      frameNumber;
+    NSString*                   detectionMethod;
+    NSDictionary*               detectionParams;
 } AQRecordState;
 
 #ifdef RCT_NEW_ARCH_ENABLED

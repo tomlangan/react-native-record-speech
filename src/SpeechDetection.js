@@ -10,12 +10,15 @@ import RNRecordSpeech from './RNRecordSpeech';
 import lamejs from 'lamejs';
 
 export const defaultSpeechRecorderConfig = {
+  detectionMethod: 'volume_threshold',
+  detectionParams: {
+    threshold: -30.0,
+  },
   sampleRate: 44100,
   channels: 1,
   bitsPerSample: 16,
   wavFile: 'audio.wav',
   monitorInterval: 250,
-  speechThreshold: -30.0,
   continuousRecording: false,
   onlyRecordOnSpeaking: true,
   timeSlice: 500,
@@ -61,16 +64,20 @@ export class SpeechDetection extends EventEmitter {
   }
 
   setupEventListeners() {
-    this.on('frame', this.onFrame);
+    RNRecordSpeech.on('frame', this.onFrame);
   }
 
   removeEventListeners() {
-    this.off('frame');
+    RNRecordSpeech.off('frame');
   }
 
   onFrame = (data) => {
     this.onDataAvailable(data.audioData);
-    this.processSpeechEvent(data.level > this.config.speechThreshold);
+    const isSpeaking = data.speechProbability > 0.75;
+    this.processSpeechEvent(isSpeaking);
+    console.log('onFrame ', JSON.stringify(data));
+    console.log(`onFrame ${isSpeaking ? 'YES' : 'NO '} speechProbability=${data.speechProbability}`);
+    console.log('onFrame ============================');
   }
 
   async startRecording() {
@@ -342,7 +349,7 @@ export class SpeechDetection extends EventEmitter {
       this.finalDataCallbackTimeout = null;
     }
   }
-  
+
   onSendSpeechData = async () => {
     console.log('onSendSpeechData length=', this.chunks.length);
 

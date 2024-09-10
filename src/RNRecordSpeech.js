@@ -19,7 +19,7 @@ const RNRecordSpeechModule = NativeModules.RNRecordSpeech
     }
   );
 
-  console.log("RNRecordSpeechModule", RNRecordSpeechModule);
+console.log("RNRecordSpeechModule", RNRecordSpeechModule);
 const eventEmitter = new NativeEventEmitter(RNRecordSpeechModule);
 console.log("eventEmitter", eventEmitter);
 
@@ -28,8 +28,8 @@ class RNRecordSpeech {
     this.listeners = new Map();
   }
 
-  init(config) {
-    return RNRecordSpeechModule.init(config);
+  async init(config) {
+     await RNRecordSpeechModule.init(config);
   }
 
   on(event, callback) {
