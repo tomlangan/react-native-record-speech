@@ -1,4 +1,6 @@
 const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
+const path = require('path');
+const pkg = require('../package.json');
 
 /**
  * Metro configuration
@@ -6,6 +8,12 @@ const {getDefaultConfig, mergeConfig} = require('@react-native/metro-config');
  *
  * @type {import('metro-config').MetroConfig}
  */
-const config = {};
+const config = {
+  dependencies: {
+    [pkg.name]: {
+      root: path.join(__dirname, '..'),
+    },
+  },
+};
 
 module.exports = mergeConfig(getDefaultConfig(__dirname), config);
