@@ -92,7 +92,7 @@ void throwRNException(NSString *message, NSInteger code) {
 }
 
 // Take a raw buffer, calculate the audio level, and return a speech probability
-- (float)detectSpeechWithLevel:(NSData *)data
+- (NSDictionary *)detectSpeechWithLevel:(NSData *)data
 {
     float defaultThreshold = -30.0f;
 

@@ -13,8 +13,9 @@ float calculateAudioLevel(NSData *audioData, AudioStreamBasicDescription format)
     float rms = 0;
     vDSP_rmsqv(floatSamples, 1, &rms, sampleCount);
     
-    // Convert RMS to decibels
-    float db = 20 * log10f(rms);
+    // Convert RMS to decibels, normalized to full scale
+    float fullScale = 32767.0f; // For 16-bit audio
+    float db = 20 * log10f(rms / fullScale);
     
     // Clean up
     free(floatSamples);

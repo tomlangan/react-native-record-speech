@@ -4,6 +4,7 @@ import {
   calculateBase64ByteLength,
 } from "./utils/bufferutils";
 import RNFS from 'react-native-fs';
+import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from './utils/eventemitter';
 import RNRecordSpeech from './RNRecordSpeech';
