@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { SpeechDetection, defaultSpeechRecorderConfig } from 'react-native-record-speech';
+import Sound from 'react-native-sound';
+
 
 const App = () => {
   const [isRecording, setIsRecording] = useState(false);
@@ -8,6 +10,7 @@ const App = () => {
   const [recordedAudios, setRecordedAudios] = useState([]);
   const [mostRecentSpeakingDuration, setMostRecentSpeakingDuration] = useState(0);
   const [longestSilenceDuration, setLongestSilenceDuration] = useState(0);
+  const [currentlyPlaying, setCurrentlyPlaying] = useState(null);
 
   const speechDetectionRef = useRef(null);
 
@@ -21,7 +24,12 @@ const App = () => {
       speechDetectionRef.current.on('mostRecentSpeakingDuration', setMostRecentSpeakingDuration);
       speechDetectionRef.current.on('longestSilenceDuration', setLongestSilenceDuration);
       speechDetectionRef.current.on('dataBlob', (audioData) => {
-        setRecordedAudios((prevAudios) => [...prevAudios, audioData]);
+        console.log('Received dataBlob event:', audioData);
+        const audioWithTimestamp = {
+          ...audioData,
+          timestamp: new Date().toISOString(),
+        };
+        setRecordedAudios((prevAudios) => [...prevAudios, audioWithTimestamp]);
       });
     };
 
@@ -42,9 +50,39 @@ const App = () => {
     }
   };
 
-  const playAudio = (audioData) => {
-    // Implement audio playback logic here
-    console.log('Playing audio:', audioData);
+  const playAudio = (audioData, index) => {
+    // Stop currently playing audio if any
+    if (currentlyPlaying) {
+      currentlyPlaying.stop();
+      setCurrentlyPlaying(null);
+    }
+
+    Sound.setCategory('Playback');
+    
+    // Create a new Sound instance
+    const sound = new Sound(audioData.data.uri, '', (error) => {
+      if (error) {
+        console.log('Failed to load the sound', error);
+        return;
+      }
+      
+      // Play the sound
+      sound.play((success) => {
+        if (success) {
+          console.log('Successfully finished playing');
+        } else {
+          console.log('Playback failed due to audio decoding errors');
+        }
+        setCurrentlyPlaying(null);
+      });
+    });
+
+    setCurrentlyPlaying(sound);
+  };
+
+  const formatTimestamp = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.toLocaleString();
   };
 
   return (
@@ -58,26 +96,33 @@ const App = () => {
         <Text>Longest Silence Duration: {longestSilenceDuration}ms</Text>
       </View>
 
-      <Text style={styles.subtitle}>Recorded Audios</Text>
-      {recordedAudios.map((audio, index) => (
-        <TouchableOpacity
-          key={index}
-          style={styles.audioButton}
-          onPress={() => playAudio(audio)}
-        >
-          <Text style={styles.audioButtonText}>Play Recording {index + 1}</Text>
-        </TouchableOpacity>
-      ))}
-
       <TouchableOpacity style={styles.button} onPress={toggleRecording}>
         <Text style={styles.buttonText}>
           {isRecording ? 'Stop Recording' : 'Start Recording'}
         </Text>
       </TouchableOpacity>
 
+      <Text style={styles.subtitle}>Recorded Audios</Text>
+      {recordedAudios.length === 0 ? (
+        <Text>No recordings yet</Text>
+      ) : (
+        recordedAudios.map((audio, index) => (
+          <TouchableOpacity
+            key={index}
+            style={styles.audioButton}
+            onPress={() => playAudio(audio, index)}
+          >
+            <Text style={styles.audioButtonText}>
+              {currentlyPlaying && currentlyPlaying === index ? 'Playing: ' : 'Play: '}
+              Recording {index + 1} - {formatTimestamp(audio.timestamp)}
+            </Text>
+          </TouchableOpacity>
+        ))
+      )}
     </ScrollView>
   );
 };
+
 
 const styles = StyleSheet.create({
   container: {
@@ -103,6 +148,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: 'center',
     marginBottom: 16,
+    marginTop: 16,
+    height: 40,
   },
   buttonText: {
     color: 'white',

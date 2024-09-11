@@ -4,8 +4,6 @@ import {
   calculateBase64ByteLength,
 } from "./utils/bufferutils";
 import RNFS from 'react-native-fs';
-import 'react-native-get-random-values';
-import { v4 as uuidv4 } from 'uuid';
 import { EventEmitter } from './utils/eventemitter';
 import RNRecordSpeech from './RNRecordSpeech';
 import lamejs from 'lamejs';
@@ -19,15 +17,26 @@ export const defaultSpeechRecorderConfig = {
   channels: 1,
   bitsPerSample: 16,
   wavFile: 'audio.wav',
-  monitorInterval: 250,
   continuousRecording: false,
   onlyRecordOnSpeaking: true,
-  timeSlice: 500,
-  speechInterval: 40,
-  silenceTimeout: 750,
+  timeSlice: 400,
+  silenceTimeout: 800,
   minimumSpeechDuration: 200,
   debug: false,
+  features: {
+    noiseReduction: true,
+    echoCancellation: true,
+  }
 };
+
+function generatePseudoUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+const INTRO_OUTRO_CHUNK_COUNT = 1;
 
 export class SpeechDetection extends EventEmitter {
   constructor() {
@@ -35,7 +44,7 @@ export class SpeechDetection extends EventEmitter {
     this.config = {};
     this.chunks = [];
     this.tempChunks = [];
-    this.waitingForFinalChunk = false;
+    this.trailingChunksToAdd = 0;
     this.speakingState = 'no_speech';
     this.encoder = null;
     this.currentSpeakingStartTime = null;
@@ -53,6 +62,10 @@ export class SpeechDetection extends EventEmitter {
     this.config = {
       ...defaultSpeechRecorderConfig,
       ...config,
+      features: {
+        ...defaultSpeechRecorderConfig.features,
+        ...(config.features || {})
+      }
     };
 
     await RNRecordSpeech.init(this.config);
@@ -75,10 +88,8 @@ export class SpeechDetection extends EventEmitter {
   onFrame = (data) => {
     this.onDataAvailable(data.audioData);
     const isSpeaking = data.speechProbability > 0.75;
+    console.log(isSpeaking ? "+" : "-");
     this.processSpeechEvent(isSpeaking);
-    console.log('onFrame ', JSON.stringify(data));
-    console.log(`onFrame ${isSpeaking ? 'YES' : 'NO '} speechProbability=${data.speechProbability}`);
-    console.log('onFrame ============================');
   }
 
   async startRecording() {
@@ -99,8 +110,8 @@ export class SpeechDetection extends EventEmitter {
   async stopRecording() {
     if (this.recording) {
       if ((!this.config.onlyRecordOnSpeaking || this.speaking) && this.chunks.length > 0) {
-        this.waitingForFinalChunk = true;
-        this.setSpeakingState('getting_final_chunk');
+        this.trailingChunksToAdd = INTRO_OUTRO_CHUNK_COUNT;
+        this.setSpeakingState('getting_final_chunks');
         this.setFinalDataCallback();
       } else {
         await this.onStopRecording();
@@ -157,15 +168,31 @@ export class SpeechDetection extends EventEmitter {
         await this.stopRecording();
       }
     }
-    this.waitingForFinalChunk = true;
-    console.log("SpeechDetection: onSilenceTimeout chunk length=", this.chunks.length);
-    this.setSpeakingState('getting_final_chunk');
-    this.setFinalDataCallback();
+
+    // if there are already chunks in tempChunks, add the first one to chunks
+    // and set the speaking state to 'no_speech'. If there are no chunks in
+    // tempChunks, we'll wait for the final chunk to arrive.
+    
+    this.trailingChunksToAdd = INTRO_OUTRO_CHUNK_COUNT;
+    if (this.tempChunks.length > 0) {
+      const chunksToAdd = this.tempChunks.length > this.trailingChunksToAdd ? this.tempChunks.slice(0, this.trailingChunksToAdd) : this.tempChunks;
+      console.log("onSilenceTimeout: GRABBING TEMP CHUNKS: ", chunksToAdd.length);
+      this.chunks = [...this.chunks, ...chunksToAdd];
+      this.trailingChunksToAdd -= chunksToAdd.length;
+    }
+
+    if (this.trailingChunksToAdd === 0) {
+      this.setSpeakingState('no_speech');
+      this.onSendSpeechData();
+    } else {
+      console.log("onSilenceTimeout: WAITING FOR FINAL CHUNK");
+      this.setSpeakingState('getting_final_chunks');
+      this.setFinalDataCallback();
+    }
 
     this.tempChunks = [];
-
     this.silenceStartTime = null;
-  }
+  };
 
   startSilenceTimer() {
     this.cancelSilenceTimer();
@@ -216,8 +243,8 @@ export class SpeechDetection extends EventEmitter {
           this.updateLongestSilence();
           this.setSpeakingState('speaking');
           break;
-        case 'getting_final_chunk':
-          this.waitingForFinalChunk = false;
+        case 'getting_final_chunks':
+          this.trailingChunksToAdd = 0;
           this.cancelFinalDataCallback();
           this.setSpeakingState('speaking');
           break;
@@ -264,7 +291,7 @@ export class SpeechDetection extends EventEmitter {
     let finalData = data;
 
     const addChunkToCircularBuffer = (chunk) => {
-      if (this.chunks.length > 2) {
+      if (this.chunks.length > INTRO_OUTRO_CHUNK_COUNT) {
         this.chunks.shift();
       }
       this.chunks.push(chunk);
@@ -276,14 +303,17 @@ export class SpeechDetection extends EventEmitter {
 
     if (this.config.onlyRecordOnSpeaking) {
       switch (this.speakingState) {
-        case 'getting_final_chunk':
-          if (!this.waitingForFinalChunk) {
-            throw new Error('Unexpected state: getting_final_chunk but not waiting for final chunk');
+        case 'getting_final_chunks':
+          if (!this.trailingChunksToAdd == 0) {
+            throw new Error('Unexpected state: getting_final_chunks but not waiting for final chunk');
           }
-          this.waitingForFinalChunk = false;
+          this.trailingChunksToAdd--;
+          console.log("TRAILING CHUNKS LEFT: ", this.trailingChunksToAdd);
           this.chunks.push(finalData);
-          this.setSpeakingState('no_speech');
-          this.onSendSpeechData();
+          if (this.trailingChunksToAdd === 0) {
+            this.setSpeakingState('no_speech');
+            this.onSendSpeechData();
+          }
           break;
         case 'speaking':
         case 'waiting_for_min_duration':
@@ -302,16 +332,18 @@ export class SpeechDetection extends EventEmitter {
     } else {
       addChunkToRecording(finalData);
 
-      if (this.waitingForFinalChunk) {
-        this.waitingForFinalChunk = false;
-        this.onSendSpeechData();
+      if (this.trailingChunksToAdd > 0) {
+        this.trailingChunksToAdd--;
+        if (this.trailingChunksToAdd === 0) {
+          this.onSendSpeechData();
+        }
       }
     }
   }
 
   async createFileObjectFromBase64(audioBuffer, mimeType) {
     const path = RNFS.CachesDirectoryPath + '/';
-    let fileName = uuidv4() + ".mp3";
+    let fileName = generatePseudoUUID() + ".mp3";
     const rawBufferFile = path + fileName;
     const mime_type = mimeType || "audio/mp3";
 

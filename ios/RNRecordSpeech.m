@@ -8,13 +8,17 @@
 #import "AudioProcessing.h"
 
 @implementation RNRecordSpeech
+    NSMutableData *accumulatedData;
+    NSInteger accumulatedSamples;
+    NSInteger samplesPerTimeSlice;
 
 RCT_EXPORT_MODULE();
 
 RCT_EXPORT_METHOD(init:(NSDictionary *)options)
 {
+    
     RCTLogInfo(@"init");
-    _recordState.mDataFormat.mSampleRate        = options[@"sampleRate"] == nil ? 44100 : [options[@"sampleRate"] doubleValue];
+    _recordState.mDataFormat.mSampleRate        = options[@"sampleRate"] ? [options[@"sampleRate"] doubleValue] : 44100;
     _recordState.mDataFormat.mBitsPerChannel    = options[@"bitsPerSample"] == nil ? 16 : [options[@"bitsPerSample"] unsignedIntValue];
     _recordState.mDataFormat.mChannelsPerFrame  = options[@"channels"] == nil ? 1 : [options[@"channels"] unsignedIntValue];
     _recordState.mDataFormat.mBytesPerPacket    = (_recordState.mDataFormat.mBitsPerChannel / 8) * _recordState.mDataFormat.mChannelsPerFrame;
@@ -34,14 +38,145 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)options)
     NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     _filePath = [NSString stringWithFormat:@"%@/%@", docDir, fileName];
     
-    _progressUpdateInterval = [options[@"monitorInterval"] intValue] ?: 250;
+    _timeSlice = options[@"timeSlice"] ? [options[@"timeSlice"] intValue] : 400;
+    samplesPerTimeSlice = (_recordState.mDataFormat.mSampleRate * _timeSlice) / 1000;
+    accumulatedData = [NSMutableData data];
+    accumulatedSamples = 0;
+
+    self.features = options[@"features"] ?: @{};
+
+    [self setupAudioSession];
+}
+
+- (BOOL)isFeatureEnabled:(NSString *)featureName defaultValue:(BOOL)defaultValue {
+    id featureValue = self.features[featureName];
+    
+    if ([featureValue isKindOfClass:[NSNumber class]]) {
+        return [featureValue boolValue];
+    } else if ([featureValue isKindOfClass:[NSString class]]) {
+        return [featureValue boolValue];
+    }
+    
+    return defaultValue;
+}
+
+
+- (void)setupAudioSession
+{
+    NSError *error = nil;
+    AVAudioSession *session = [AVAudioSession sharedInstance];
+
+    AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionMixWithOthers;
+    
+    [session setCategory:AVAudioSessionCategoryPlayAndRecord 
+             withOptions:options
+                   error:&error];
+    if (error) {
+        RCTLogError(@"Error setting AVAudioSession category: %@", error);
+        return;
+    }
+
+    if ([self isFeatureEnabled:@"echoCancellation" defaultValue:NO]) {
+        [session setMode:AVAudioSessionModeVoiceChat error:&error];
+    } else {
+        [session setMode:AVAudioSessionModeDefault error:&error];
+    }
+    if (error) {
+        RCTLogError(@"Error setting AVAudioSession mode: %@", error);
+        return;
+    }
+
+    [session setActive:YES error:&error];
+    if (error) {
+        RCTLogError(@"Error activating AVAudioSession: %@", error);
+        return;
+    }
+}
+
+
+- (void)setupAudioEngineWithAEC
+{
+    if (!self.audioEngine) {
+        self.audioEngine = [[AVAudioEngine alloc] init];
+    }
+
+    AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+    
+    // Enable voice processing on the input node if available
+    if ([inputNode respondsToSelector:@selector(setVoiceProcessingEnabled:error:)]) {
+        NSError *error = nil;
+        if (![inputNode setVoiceProcessingEnabled:YES error:&error]) {
+            RCTLogError(@"Failed to enable voice processing: %@", error);
+        }
+    } else {
+        RCTLogWarn(@"Voice processing is not available on this device");
+    }
+
+    // Ensure the input is connected to the main mixer
+    AVAudioFormat *inputFormat = [inputNode outputFormatForBus:0];
+    [self.audioEngine connect:inputNode to:self.audioEngine.mainMixerNode format:inputFormat];
+
+    // Prepare the engine
+    NSError *error = nil;
+    if (![self.audioEngine startAndReturnError:&error]) {
+        RCTLogError(@"Error starting audio engine: %@", error);
+    }
+}
+
+- (void)setupAudioUnit {
+    if (![self isFeatureEnabled:@"noiseReduction" defaultValue:NO]) {
+        return; // Skip Audio Unit setup if noise reduction is not enabled
+    }
+
+    AudioComponentDescription desc;
+    desc.componentType = kAudioUnitType_Effect;
+    desc.componentSubType = kAudioUnitSubType_HighPassFilter;
+    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+    desc.componentFlags = 0;
+    desc.componentFlagsMask = 0;
+
+    AudioComponent component = AudioComponentFindNext(NULL, &desc);
+    OSStatus status = AudioComponentInstanceNew(component, &_recordState.audioUnit);
+    if (status != noErr) {
+        RCTLogError(@"Error creating Audio Unit: %d", (int)status);
+        return;
+    }
+
+    // Configure the high-pass filter
+    AudioUnitInitialize(_recordState.audioUnit);
+    
+    // Set the cutoff frequency (adjust this value as needed)
+    Float64 cutoffFrequency = 80.0;  // 80 Hz is a common starting point
+    AudioUnitSetParameter(_recordState.audioUnit,
+                          kHipassParam_CutoffFrequency,
+                          kAudioUnitScope_Global,
+                          0,
+                          cutoffFrequency,
+                          0);
+
+    // Set the resonance (adjust this value as needed)
+    Float64 resonance = 0.7;  // 0.7 is a moderate value
+    AudioUnitSetParameter(_recordState.audioUnit,
+                          kHipassParam_Resonance,
+                          kAudioUnitScope_Global,
+                          0,
+                          resonance,
+                          0);
 }
 
 RCT_EXPORT_METHOD(start)
 {
     RCTLogInfo(@"start");
+    
+    [self setupAudioSession];
 
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord error:nil];
+    if ([self isFeatureEnabled:@"echoCancellation" defaultValue:NO]) {
+        [self setupAudioEngineWithAEC];
+    }
+
+    if ([self isFeatureEnabled:@"noiseReduction" defaultValue:NO]) {
+        [self setupAudioUnit];
+    }
 
     _recordState.mIsRunning = true;
     _recordState.mCurrentPacket = 0;
@@ -68,6 +203,13 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejec
         AudioQueueDispose(_recordState.mQueue, true);
         AudioFileClose(_recordState.mAudioFile);
     }
+
+    if (self.audioEngine) {
+        [self.audioEngine stop];
+    }
+    
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+    
     [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
     
     resolve(_filePath);
@@ -129,6 +271,16 @@ void HandleInputBuffer(void *inUserData,
         return;
     }
 
+    // Apply the high-pass filter only if noise reduction is enabled
+    if (pRecordState->audioUnit != NULL) {
+        AudioUnitRender(pRecordState->audioUnit,
+                        0,
+                        inStartTime,
+                        0,
+                        inNumPackets,
+                        inBuffer);
+    }
+
     // Write audio data to file
     if (AudioFileWritePackets(pRecordState->mAudioFile,
                               false,
@@ -141,16 +293,34 @@ void HandleInputBuffer(void *inUserData,
         pRecordState->mCurrentPacket += inNumPackets;
     }
 
-    NSData *data = [NSData dataWithBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
+    [pRecordState->mSelf accumulateAndProcessBuffer:inBuffer];
+
+    // Re-enqueue the buffer for continued recording
+    AudioQueueEnqueueBuffer(pRecordState->mQueue, inBuffer, 0, NULL);
+}
+
+- (void)accumulateAndProcessBuffer:(AudioQueueBufferRef)inBuffer
+{
+    [accumulatedData appendBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
+    accumulatedSamples += inBuffer->mAudioDataByteSize / (_recordState.mDataFormat.mBitsPerChannel / 8);
+
+    if (accumulatedSamples >= samplesPerTimeSlice) {
+        [self processAccumulatedData];
+    }
+}
+
+
+- (void)processAccumulatedData
+{
+    NSData *data = [NSData dataWithData:accumulatedData];
 
     NSDictionary *result = @{
         @"speechProbability": @(0.0f),
         @"info": @{@"level": @(-160.0f)}
     };
     
-    if ([pRecordState->detectionMethod isEqualToString:@"volume_threshold"]) {
-        // Calculate speech probability based on volume threshold
-        result = [pRecordState->mSelf detectSpeechWithLevel:data];
+    if ([_recordState.detectionMethod isEqualToString:@"volume_threshold"]) {
+        result = [self detectSpeechWithLevel:data];
     } else {
         throwRNException(@"Invalid detection method", 1);
     }
@@ -159,18 +329,19 @@ void HandleInputBuffer(void *inUserData,
     NSString *str = [data base64EncodedStringWithOptions:0];
 
     // Send a single event with frame number, audio data, speech probability, and debug info
-    [pRecordState->mSelf sendEventWithName:@"frame" body:@{
-        @"frameNumber": @(pRecordState->frameNumber),
+    [self sendEventWithName:@"frame" body:@{
+        @"frameNumber": @(_recordState.frameNumber),
         @"audioData": str,
         @"speechProbability": result[@"speechProbability"],
         @"info": result[@"info"]
     }];
 
     // Increment frame number
-    pRecordState->frameNumber++;
+    _recordState.frameNumber++;
 
-    // Re-enqueue the buffer for continued recording
-    AudioQueueEnqueueBuffer(pRecordState->mQueue, inBuffer, 0, NULL);
+    // Reset accumulated data
+    accumulatedData = [NSMutableData data];
+    accumulatedSamples = 0;
 }
 
 - (void)dealloc
@@ -186,6 +357,18 @@ void HandleInputBuffer(void *inUserData,
     if (_recordState.mQueue != NULL) {
         AudioQueueDispose(_recordState.mQueue, true);
         _recordState.mQueue = NULL;
+    }
+
+    // Clean up the Audio Unit only if it was initialized
+    if (_recordState.audioUnit != NULL) {
+        AudioUnitUninitialize(_recordState.audioUnit);
+        AudioComponentInstanceDispose(_recordState.audioUnit);
+        _recordState.audioUnit = NULL;
+    }
+    
+    if (self.audioEngine) {
+        [self.audioEngine stop];
+        self.audioEngine = nil;
     }
 }
 
