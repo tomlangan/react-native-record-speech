@@ -54,7 +54,7 @@ export const Settings = ({ settings, onSettingChange }) => {
   return (
     <FlatList
       data={settingsArray}
-      renderItem={({ item }) => <SettingsItem {...item} />}
+      renderItem={({ item }) => <SettingsItem label={item.label} value={item.value} onValueChange={item.onValueChange} options={item.options} />}
       keyExtractor={(item) => item.key}
       style={styles.settingsList}
     />

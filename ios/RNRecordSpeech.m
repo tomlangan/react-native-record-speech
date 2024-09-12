@@ -176,16 +176,7 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
             
             __block NSMutableData *audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
             __block NSUInteger sampleCount = 0;
-            __block SFSpeechAudioBufferRecognitionRequest *recognitionRequest = nil;
-            __block SFSpeechRecognitionTask *recognitionTask = nil;
-            
-            if ([self.config[@"detectionMethod"] isEqualToString:@"voice_activity_detection"]) {
-                recognitionRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
-                recognitionRequest.taskHint = SFSpeechRecognitionTaskHintDictation;
-                recognitionTask = [self.speechRecognizer recognitionTaskWithRequest:recognitionRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
-                    // Handle continuous speech recognition results here
-                }];
-            }
+            __block NSDate *lastFrameTime = [NSDate date];
             
             [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
                 NSUInteger numberOfFrames = buffer.frameLength;
@@ -194,21 +185,28 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                 [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
                 sampleCount += numberOfFrames;
                 
-                if (sampleCount >= samplesPerSlice) {
-                    float speechProbability = [self detectSpeechInBuffer:audioBuffer withRecognitionRequest:recognitionRequest];
+                NSDate *currentTime = [NSDate date];
+                NSTimeInterval timeSinceLastFrame = [currentTime timeIntervalSinceDate:lastFrameTime];
+                
+                if (sampleCount >= samplesPerSlice && timeSinceLastFrame >= timeSlice) {
+                    if (self.debugMode) {
+                        NSLog(@"RNRecordSpeech - Frame emitted: sampleCount: %lu, timeSinceLastFrame: %.3f", (unsigned long)sampleCount, timeSinceLastFrame);
+                    }
+                    NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
                     
                     NSString *base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
                     
                     NSDictionary *frameData = @{
                         @"audioData": base64AudioData,
-                        @"speechProbability": @(speechProbability),
-                        @"info": [self getDebugInfo]
+                        @"speechProbability": detectionResults[@"speechProbability"],
+                        @"info": detectionResults[@"info"]
                     };
                     
                     [self sendEventWithName:@"frame" body:frameData];
                     
                     audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
                     sampleCount = 0;
+                    lastFrameTime = currentTime;
                 }
             }];
             
@@ -221,103 +219,109 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     }
 }
 
-- (float)detectSpeechInBuffer:(NSData *)audioBuffer withRecognitionRequest:(SFSpeechAudioBufferRecognitionRequest *)recognitionRequest
+- (NSDictionary*)detectSpeechInBuffer:(NSData *)audioBuffer
 {
     NSString *detectionMethod = self.config[@"detectionMethod"];
     if ([detectionMethod isEqualToString:@"voice_activity_detection"]) {
-        return [self detectSpeechUsingVAD:audioBuffer withRecognitionRequest:recognitionRequest];
+        return [self detectSpeechUsingVAD:audioBuffer];
     } else if ([detectionMethod isEqualToString:@"volume_threshold"]) {
         return [self detectSpeechUsingVolumeThreshold:audioBuffer];
     }
-    return 0.0;
+    
+    [self throwException:@"DetectionError" reason:@"Invalid detection method specified."]; // Fixed line
+    return nil;
 }
 
-
-- (float)detectSpeechUsingVAD:(NSData *)audioBuffer withRecognitionRequest:(SFSpeechAudioBufferRecognitionRequest *)recognitionRequest
+- (NSDictionary*)detectSpeechUsingVAD:(NSData *)audioBuffer
 {
     if (!self.recentSpeechProbabilities) {
         self.recentSpeechProbabilities = [NSMutableArray array];
         self.maxProbabilityBufferSize = 10; // Adjust this value as needed
     }
 
-    if (recognitionRequest) {
-        AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:[[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:44100 channels:1 interleaved:NO] frameCapacity:audioBuffer.length / sizeof(float)];
-        memcpy(pcmBuffer.floatChannelData[0], audioBuffer.bytes, audioBuffer.length);
-        pcmBuffer.frameLength = audioBuffer.length / sizeof(float);
-        
-        [recognitionRequest appendAudioPCMBuffer:pcmBuffer];
-        
-        // Calculate speech probability based on audio energy
-        float totalEnergy = 0.0f;
-        float *samples = (float *)audioBuffer.bytes;
-        NSUInteger sampleCount = audioBuffer.length / sizeof(float);
-        
-        for (NSUInteger i = 0; i < sampleCount; i++) {
-            totalEnergy += samples[i] * samples[i];
-        }
-        
-        float avgEnergy = totalEnergy / sampleCount;
-        float normalizedEnergy = fmin(1.0f, fmax(0.0f, avgEnergy * 10)); // Adjust scaling factor as needed
-        
-        [self.recentSpeechProbabilities addObject:@(normalizedEnergy)];
-        if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
-            [self.recentSpeechProbabilities removeObjectAtIndex:0];
-        }
-        
-        // Calculate the average of recent probabilities
-        float sum = 0.0f;
-        for (NSNumber *prob in self.recentSpeechProbabilities) {
-            sum += prob.floatValue;
-        }
-        float averageProbability = sum / self.recentSpeechProbabilities.count;
-        
-        return averageProbability;
+    float speechProbability = 0.0;
+    NSDictionary *info = @{};
+
+    AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+    AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
+    
+    // Use the hardware's sample rate instead of the one from config
+    double sampleRate = inputFormat.sampleRate;
+    NSNumber *channels = self.config[@"channels"];
+
+    AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 
+                                                            sampleRate:sampleRate
+                                                              channels:channels.unsignedIntegerValue
+                                                            interleaved:NO];
+    AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
+                                                                frameCapacity:audioBuffer.length / sizeof(float)];
+    memcpy(pcmBuffer.floatChannelData[0], audioBuffer.bytes, audioBuffer.length);
+    pcmBuffer.frameLength = audioBuffer.length / sizeof(float);
+
+    
+    // Calculate speech probability based on audio energy
+    float totalEnergy = 0.0f;
+    float *samples = (float *)audioBuffer.bytes;
+    NSUInteger sampleCount = audioBuffer.length / sizeof(float);
+    
+    for (NSUInteger i = 0; i < sampleCount; i++) {
+        totalEnergy += samples[i] * samples[i];
     }
-    return 0.0;
+    
+    float avgEnergy = totalEnergy / sampleCount;
+    float normalizedEnergy = fmin(1.0f, fmax(0.0f, avgEnergy * 10)); // Adjust scaling factor as needed
+    
+    [self.recentSpeechProbabilities addObject:@(normalizedEnergy)];
+    if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
+        [self.recentSpeechProbabilities removeObjectAtIndex:0];
+    }
+    
+    // Calculate the average of recent probabilities
+    float sum = 0.0f;
+    for (NSNumber *prob in self.recentSpeechProbabilities) {
+        sum += prob.floatValue;
+    }
+    speechProbability = sum / self.recentSpeechProbabilities.count;
+
+    info = @{
+        @"averageEnergy": @(avgEnergy),
+        @"normalizedEnergy": @(normalizedEnergy),
+    };
+
+    return @{@"speechProbability": @(speechProbability), @"info": info};
 }
 
-- (float)detectSpeechUsingVolumeThreshold:(NSData *)audioBuffer
+- (NSDictionary*)detectSpeechUsingVolumeThreshold:(NSData *)audioBuffer
 {
     float *samples = (float *)audioBuffer.bytes;
     NSUInteger sampleCount = audioBuffer.length / sizeof(float);
     
     float sum = 0.0;
+    float maxAmplitude = 0.0;
     for (NSUInteger i = 0; i < sampleCount; i++) {
-        sum += samples[i] * samples[i];
+        float absValue = fabsf(samples[i]);
+        sum += absValue;
+        if (absValue > maxAmplitude) {
+            maxAmplitude = absValue;
+        }
     }
     
-    float rms = sqrtf(sum / sampleCount);
-    float db = 20 * log10f(rms);
+    float averageAmplitude = sum / sampleCount;
+    float db = 20 * log10f(averageAmplitude);
     
     float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue];
     
-    // Calculate the probability using a Gaussian function
-    float variance = 21.6; // Calculated based on requirements
-    float probabilityAtThreshold = 0.8;
-    float maxProbability = 1.0;
+    // Calculate probability using a sigmoid function
+    float sensitivity = 5.0; // Adjust this value to change the steepness of the probability curve
+    float probability = 1.0 / (1.0 + expf(-sensitivity * (db - threshold)));
     
-    float dbDifference = db - threshold;
-    float gaussianFactor = -powf(dbDifference, 2) / (2 * variance);
-    float probability = maxProbability * exp(gaussianFactor);
+    if (self.debugMode) {
+        NSLog(@"RNRecordSpeech - Volume Threshold: Average dB: %.2f, Max Amplitude: %.2f, Threshold: %.2f, Probability: %.2f", db, maxAmplitude, threshold, probability);
+    }
     
-    // Scale the probability so that it's exactly 0.8 at the threshold
-    probability = probability * (probabilityAtThreshold / maxProbability);
-    
-    // Clamp the probability between 0 and 1
-    probability = fmax(0.0, fmin(1.0, probability));
-    
-    return probability;
+    return @{@"speechProbability": @(probability), @"info": @{@"averageDb": @(db), @"maxAmplitude": @(maxAmplitude)}};
 }
 
-- (NSDictionary *)getDebugInfo
-{
-    // Implement this method to return any debug information you want to include
-    // This could include things like current audio levels, VAD scores, etc.
-    return @{
-        @"currentTime": @([[NSDate date] timeIntervalSince1970]),
-        // Add more debug info as needed
-    };
-}
 
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
