@@ -5,7 +5,6 @@
 #import <React/RCTBridge.h>
 #import <React/RCTUtils.h>
 #import <React/RCTEventDispatcher.h>
-#import "AudioProcessing.h"
 
 @implementation RNRecordSpeech
     NSMutableData *accumulatedData;
@@ -44,6 +43,14 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)options)
     accumulatedSamples = 0;
 
     self.features = options[@"features"] ?: @{};
+
+    // Initialize VAD state
+    // check if the method is 'voice_activity_detection' and initialize the VAD state
+    if ([_recordState.detectionMethod isEqualToString:@"voice_activity_detection"]) {
+        float initialThreshold = [options[@"vadInitialThreshold"] floatValue] ?: 0.3f;
+        float adaptationRate = [options[@"vadAdaptationRate"] floatValue] ?: 0.1f;
+        self.vadState = initializeVADState(initialThreshold, adaptationRate);
+    }
 
     [self setupAudioSession];
 }
@@ -182,6 +189,17 @@ RCT_EXPORT_METHOD(start)
     _recordState.mCurrentPacket = 0;
     _recordState.frameNumber = 0;
 
+    // Print each of the mDataFormat fields
+    RCTLogInfo(@"Sample Rate: %f", _recordState.mDataFormat.mSampleRate);
+    RCTLogInfo(@"Bits Per Channel: %u", _recordState.mDataFormat.mBitsPerChannel);
+    RCTLogInfo(@"Channels Per Frame: %u", _recordState.mDataFormat.mChannelsPerFrame);
+    RCTLogInfo(@"Bytes Per Packet: %u", _recordState.mDataFormat.mBytesPerPacket);
+    RCTLogInfo(@"Bytes Per Frame: %u", _recordState.mDataFormat.mBytesPerFrame);
+    RCTLogInfo(@"Frames Per Packet: %u", _recordState.mDataFormat.mFramesPerPacket);
+    RCTLogInfo(@"Reserved: %u", _recordState.mDataFormat.mReserved);
+    RCTLogInfo(@"Format ID: %u", _recordState.mDataFormat.mFormatID);
+    RCTLogInfo(@"Format Flags: %u", _recordState.mDataFormat.mFormatFlags);
+
     CFURLRef url = CFURLCreateWithString(kCFAllocatorDefault, (CFStringRef)_filePath, NULL);
     AudioFileCreateWithURL(url, kAudioFileWAVEType, &_recordState.mDataFormat, kAudioFileFlags_EraseFile, &_recordState.mAudioFile);
     CFRelease(url);
@@ -258,6 +276,30 @@ void throwRNException(NSString *message, NSInteger code) {
     return result;
 }
 
+NSDictionary* detectSpeechWithVAD(NSData *audioData, AudioStreamBasicDescription format, VADState *vadState) {
+    float currentLevel = calculateAudioLevel(audioData, format);
+    
+    // Calculate energy (can be adjusted based on your specific needs)
+    float currentEnergy = powf(10, currentLevel / 10);
+    
+    // Use energy-based VAD
+    BOOL isSpeech = detectSpeechWithEnergy(currentEnergy, vadState);
+    
+    // Determine speech probability based on VAD result
+    float speechProbability = isSpeech ? 0.9f : 0.1f;
+    
+    NSLog(@"VAD Debug - Level: %f, Energy: %f, Threshold: %f, IsSpeech: %d", currentLevel, currentEnergy, vadState->threshold, isSpeech);
+    
+    return @{
+        @"speechProbability": @(speechProbability),
+        @"info": @{
+            @"level": @(currentLevel),
+            @"energy": @(currentEnergy),
+            @"vadThreshold": @(vadState->threshold)
+        }
+    };
+}
+
 void HandleInputBuffer(void *inUserData,
                        AudioQueueRef inAQ,
                        AudioQueueBufferRef inBuffer,
@@ -321,6 +363,8 @@ void HandleInputBuffer(void *inUserData,
     
     if ([_recordState.detectionMethod isEqualToString:@"volume_threshold"]) {
         result = [self detectSpeechWithLevel:data];
+    }  else if ([_recordState.detectionMethod isEqualToString:@"voice_activity_detection"]) {
+        result = detectSpeechWithVAD(data, _recordState.mDataFormat, &_vadState);
     } else {
         throwRNException(@"Invalid detection method", 1);
     }

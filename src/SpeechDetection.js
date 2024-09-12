@@ -9,7 +9,8 @@ import RNRecordSpeech from './RNRecordSpeech';
 import lamejs from 'lamejs';
 
 export const defaultSpeechRecorderConfig = {
-  detectionMethod: 'volume_threshold',
+  // 'volume_threshold' or 'voice_activity_detection'
+  detectionMethod: 'voice_activity_detection',
   detectionParams: {
     threshold: -30.0,
   },

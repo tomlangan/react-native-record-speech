@@ -2,6 +2,7 @@
 #import <React/RCTEventEmitter.h>
 #import <React/RCTBridgeModule.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import "AudioProcessing.h"
 
 #define kNumberBuffers 3
 
@@ -38,6 +39,7 @@ typedef struct {
 @property (nonatomic, strong) NSDate *prevProgressUpdateTime;
 @property (nonatomic, strong) NSDictionary *features;
 @property (nonatomic, strong) AVAudioEngine *audioEngine;
+@property (nonatomic, assign) VADState vadState;
 
 - (void)init:(NSDictionary *)options;
 - (void)start;
