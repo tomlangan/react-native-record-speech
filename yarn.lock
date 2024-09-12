@@ -10468,6 +10468,7 @@ __metadata:
     react-native: 0.75.2
     react-native-builder-bob: ^0.30.0
     react-native-fs: ^2.20.0
+    react-native-select-dropdown: ^4.0.1
     react-native-sound: ^0.11.2
   languageName: unknown
   linkType: soft
@@ -10501,6 +10502,13 @@ __metadata:
     react-native-fs: ^2.20.0
   languageName: unknown
   linkType: soft
+
+"react-native-select-dropdown@npm:^4.0.1":
+  version: 4.0.1
+  resolution: "react-native-select-dropdown@npm:4.0.1"
+  checksum: 1c285c52982e7a2cb765ddf5499330971f12190a206668429c29ed5d1d523f5158ff075c85bca2eb6e5d8f938855ec17a6e11e84230ec896a72aec5f25a5c9ce
+  languageName: node
+  linkType: hard
 
 "react-native-sound@npm:^0.11.2":
   version: 0.11.2

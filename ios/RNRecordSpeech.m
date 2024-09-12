@@ -1,419 +1,379 @@
 #import "RNRecordSpeech.h"
-#import <React/RCTEventEmitter.h>
-#import <React/RCTBridgeModule.h>
-#import <React/RCTConvert.h>
-#import <React/RCTBridge.h>
-#import <React/RCTUtils.h>
-#import <React/RCTEventDispatcher.h>
+#import <React/RCTLog.h>
 
 @implementation RNRecordSpeech
-    NSMutableData *accumulatedData;
-    NSInteger accumulatedSamples;
-    NSInteger samplesPerTimeSlice;
 
-RCT_EXPORT_MODULE();
-
-RCT_EXPORT_METHOD(init:(NSDictionary *)options)
-{
-    
-    RCTLogInfo(@"init");
-    _recordState.mDataFormat.mSampleRate        = options[@"sampleRate"] ? [options[@"sampleRate"] doubleValue] : 44100;
-    _recordState.mDataFormat.mBitsPerChannel    = options[@"bitsPerSample"] == nil ? 16 : [options[@"bitsPerSample"] unsignedIntValue];
-    _recordState.mDataFormat.mChannelsPerFrame  = options[@"channels"] == nil ? 1 : [options[@"channels"] unsignedIntValue];
-    _recordState.mDataFormat.mBytesPerPacket    = (_recordState.mDataFormat.mBitsPerChannel / 8) * _recordState.mDataFormat.mChannelsPerFrame;
-    _recordState.mDataFormat.mBytesPerFrame     = _recordState.mDataFormat.mBytesPerPacket;
-    _recordState.mDataFormat.mFramesPerPacket   = 1;
-    _recordState.mDataFormat.mReserved          = 0;
-    _recordState.mDataFormat.mFormatID          = kAudioFormatLinearPCM;
-    _recordState.mDataFormat.mFormatFlags       = _recordState.mDataFormat.mBitsPerChannel == 8 ? kLinearPCMFormatFlagIsPacked : (kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked);
-    _recordState.detectionMethod                = options[@"detectionMethod"] ?: @"volume_threshold";
-    _recordState.detectionParams                = options[@"detectionParams"];
-
-    _recordState.bufferByteSize = 2048;
-    _recordState.mSelf = self;
-    _recordState.frameNumber = 0;
-
-    NSString *fileName = options[@"wavFile"] == nil ? @"audio.wav" : options[@"wavFile"];
-    NSString *docDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    _filePath = [NSString stringWithFormat:@"%@/%@", docDir, fileName];
-    
-    _timeSlice = options[@"timeSlice"] ? [options[@"timeSlice"] intValue] : 400;
-    samplesPerTimeSlice = (_recordState.mDataFormat.mSampleRate * _timeSlice) / 1000;
-    accumulatedData = [NSMutableData data];
-    accumulatedSamples = 0;
-
-    self.features = options[@"features"] ?: @{};
-
-    // Initialize VAD state
-    // check if the method is 'voice_activity_detection' and initialize the VAD state
-    if ([_recordState.detectionMethod isEqualToString:@"voice_activity_detection"]) {
-        float initialThreshold = [options[@"vadInitialThreshold"] floatValue] ?: 0.3f;
-        float adaptationRate = [options[@"vadAdaptationRate"] floatValue] ?: 0.1f;
-        self.vadState = initializeVADState(initialThreshold, adaptationRate);
-    }
-
-    [self setupAudioSession];
-}
-
-- (BOOL)isFeatureEnabled:(NSString *)featureName defaultValue:(BOOL)defaultValue {
-    id featureValue = self.features[featureName];
-    
-    if ([featureValue isKindOfClass:[NSNumber class]]) {
-        return [featureValue boolValue];
-    } else if ([featureValue isKindOfClass:[NSString class]]) {
-        return [featureValue boolValue];
-    }
-    
-    return defaultValue;
-}
-
-
-- (void)setupAudioSession
-{
-    NSError *error = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-
-    AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionMixWithOthers;
-    
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord 
-             withOptions:options
-                   error:&error];
-    if (error) {
-        RCTLogError(@"Error setting AVAudioSession category: %@", error);
-        return;
-    }
-
-    if ([self isFeatureEnabled:@"echoCancellation" defaultValue:NO]) {
-        [session setMode:AVAudioSessionModeVoiceChat error:&error];
-    } else {
-        [session setMode:AVAudioSessionModeDefault error:&error];
-    }
-    if (error) {
-        RCTLogError(@"Error setting AVAudioSession mode: %@", error);
-        return;
-    }
-
-    [session setActive:YES error:&error];
-    if (error) {
-        RCTLogError(@"Error activating AVAudioSession: %@", error);
-        return;
-    }
-}
-
-
-- (void)setupAudioEngineWithAEC
-{
-    if (!self.audioEngine) {
-        self.audioEngine = [[AVAudioEngine alloc] init];
-    }
-
-    AVAudioInputNode *inputNode = self.audioEngine.inputNode;
-    
-    // Enable voice processing on the input node if available
-    if ([inputNode respondsToSelector:@selector(setVoiceProcessingEnabled:error:)]) {
-        NSError *error = nil;
-        if (![inputNode setVoiceProcessingEnabled:YES error:&error]) {
-            RCTLogError(@"Failed to enable voice processing: %@", error);
-        }
-    } else {
-        RCTLogWarn(@"Voice processing is not available on this device");
-    }
-
-    // Ensure the input is connected to the main mixer
-    AVAudioFormat *inputFormat = [inputNode outputFormatForBus:0];
-    [self.audioEngine connect:inputNode to:self.audioEngine.mainMixerNode format:inputFormat];
-
-    // Prepare the engine
-    NSError *error = nil;
-    if (![self.audioEngine startAndReturnError:&error]) {
-        RCTLogError(@"Error starting audio engine: %@", error);
-    }
-}
-
-- (void)setupAudioUnit {
-    if (![self isFeatureEnabled:@"noiseReduction" defaultValue:NO]) {
-        return; // Skip Audio Unit setup if noise reduction is not enabled
-    }
-
-    AudioComponentDescription desc;
-    desc.componentType = kAudioUnitType_Effect;
-    desc.componentSubType = kAudioUnitSubType_HighPassFilter;
-    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
-    desc.componentFlags = 0;
-    desc.componentFlagsMask = 0;
-
-    AudioComponent component = AudioComponentFindNext(NULL, &desc);
-    OSStatus status = AudioComponentInstanceNew(component, &_recordState.audioUnit);
-    if (status != noErr) {
-        RCTLogError(@"Error creating Audio Unit: %d", (int)status);
-        return;
-    }
-
-    // Configure the high-pass filter
-    AudioUnitInitialize(_recordState.audioUnit);
-    
-    // Set the cutoff frequency (adjust this value as needed)
-    Float64 cutoffFrequency = 80.0;  // 80 Hz is a common starting point
-    AudioUnitSetParameter(_recordState.audioUnit,
-                          kHipassParam_CutoffFrequency,
-                          kAudioUnitScope_Global,
-                          0,
-                          cutoffFrequency,
-                          0);
-
-    // Set the resonance (adjust this value as needed)
-    Float64 resonance = 0.7;  // 0.7 is a moderate value
-    AudioUnitSetParameter(_recordState.audioUnit,
-                          kHipassParam_Resonance,
-                          kAudioUnitScope_Global,
-                          0,
-                          resonance,
-                          0);
-}
-
-RCT_EXPORT_METHOD(start)
-{
-    RCTLogInfo(@"start");
-    
-    [self setupAudioSession];
-
-    if ([self isFeatureEnabled:@"echoCancellation" defaultValue:NO]) {
-        [self setupAudioEngineWithAEC];
-    }
-
-    if ([self isFeatureEnabled:@"noiseReduction" defaultValue:NO]) {
-        [self setupAudioUnit];
-    }
-
-    _recordState.mIsRunning = true;
-    _recordState.mCurrentPacket = 0;
-    _recordState.frameNumber = 0;
-
-    // Print each of the mDataFormat fields
-    RCTLogInfo(@"Sample Rate: %f", _recordState.mDataFormat.mSampleRate);
-    RCTLogInfo(@"Bits Per Channel: %u", _recordState.mDataFormat.mBitsPerChannel);
-    RCTLogInfo(@"Channels Per Frame: %u", _recordState.mDataFormat.mChannelsPerFrame);
-    RCTLogInfo(@"Bytes Per Packet: %u", _recordState.mDataFormat.mBytesPerPacket);
-    RCTLogInfo(@"Bytes Per Frame: %u", _recordState.mDataFormat.mBytesPerFrame);
-    RCTLogInfo(@"Frames Per Packet: %u", _recordState.mDataFormat.mFramesPerPacket);
-    RCTLogInfo(@"Reserved: %u", _recordState.mDataFormat.mReserved);
-    RCTLogInfo(@"Format ID: %u", _recordState.mDataFormat.mFormatID);
-    RCTLogInfo(@"Format Flags: %u", _recordState.mDataFormat.mFormatFlags);
-
-    CFURLRef url = CFURLCreateWithString(kCFAllocatorDefault, (CFStringRef)_filePath, NULL);
-    AudioFileCreateWithURL(url, kAudioFileWAVEType, &_recordState.mDataFormat, kAudioFileFlags_EraseFile, &_recordState.mAudioFile);
-    CFRelease(url);
-
-    AudioQueueNewInput(&_recordState.mDataFormat, HandleInputBuffer, &_recordState, NULL, NULL, 0, &_recordState.mQueue);
-    for (int i = 0; i < kNumberBuffers; i++) {
-        AudioQueueAllocateBuffer(_recordState.mQueue, _recordState.bufferByteSize, &_recordState.mBuffers[i]);
-        AudioQueueEnqueueBuffer(_recordState.mQueue, _recordState.mBuffers[i], 0, NULL);
-    }
-    AudioQueueStart(_recordState.mQueue, NULL);
-}
-
-RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
-{
-    RCTLogInfo(@"stop");
-    if (_recordState.mIsRunning) {
-        _recordState.mIsRunning = false;
-        AudioQueueStop(_recordState.mQueue, true);
-        AudioQueueDispose(_recordState.mQueue, true);
-        AudioFileClose(_recordState.mAudioFile);
-    }
-
-    if (self.audioEngine) {
-        [self.audioEngine stop];
-    }
-    
-    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
-    
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
-    
-    resolve(_filePath);
-    unsigned long long fileSize = [[[NSFileManager defaultManager] attributesOfItemAtPath:_filePath error:nil] fileSize];
-    RCTLogInfo(@"file path %@", _filePath);
-    RCTLogInfo(@"file size %llu", fileSize);
-}
+RCT_EXPORT_MODULE()
 
 - (NSArray<NSString *> *)supportedEvents
 {
     return @[@"frame"];
 }
 
-void throwRNException(NSString *message, NSInteger code) {
-    NSDictionary *userInfo = @{
-        NSLocalizedDescriptionKey: message
-    };
-    NSError *error = [NSError errorWithDomain:@"RNRecordSpeechErrorDomain"
-                                         code:code
-                                     userInfo:userInfo];
-    RCTFatal(error);
-}
-
-// Take a raw buffer, calculate the audio level, and return a speech probability
-- (NSDictionary *)detectSpeechWithLevel:(NSData *)data
+- (void)throwException:(NSString *)name reason:(NSString *)reason
 {
-    float defaultThreshold = -30.0f;
-
-    // Get the volume threshold from the options or use the default
-    float threshold = [_recordState.detectionParams[@"threshold"] floatValue]?: defaultThreshold;
-
-    // Calculate the current audio level using our new utility function
-    float currentLevel = calculateAudioLevel(data, _recordState.mDataFormat);
-
-    // Simple speech detection based on volume threshold
-    float speechProbability = (currentLevel > threshold) ? 0.8f : 0.2f;  // Simplified example
-
-    NSDictionary *result = @{
-        @"speechProbability": @(speechProbability),
-        @"info": @{
-            @"level": @(currentLevel),
-        }
-    };
-
-    // Assuming this is part of a method that returns an NSDictionary
-    return result;
+    NSString *domain = @"com.RNRecordSpeech";
+    NSDictionary *userInfo = @{NSLocalizedDescriptionKey: reason};
+    NSError *error = [NSError errorWithDomain:domain code:-1 userInfo:userInfo];
+    @throw [NSException exceptionWithName:name reason:reason userInfo:@{NSUnderlyingErrorKey: error}];
 }
 
-NSDictionary* detectSpeechWithVAD(NSData *audioData, AudioStreamBasicDescription format, VADState *vadState) {
-    float currentLevel = calculateAudioLevel(audioData, format);
+- (BOOL)isFeatureEnabled:(NSString *)featureName
+{
+    if (self.config && self.config[@"features"]) {
+        NSDictionary *features = self.config[@"features"];
+        NSNumber *isEnabled = features[featureName];
+        return [isEnabled boolValue];
+    }
+    return NO;
+}
+
+// Add this new method to print debug information
+- (void)printRecordingParameters {
+    if (!self.debugMode) return;
     
-    // Calculate energy (can be adjusted based on your specific needs)
-    float currentEnergy = powf(10, currentLevel / 10);
+    NSLog(@"RNRecordSpeech - Recording Parameters:");
+    NSLog(@"Detection Method: %@", self.config[@"detectionMethod"]);
+    NSLog(@"Sample Rate: %@", self.config[@"sampleRate"]);
+    NSLog(@"Channels: %@", self.config[@"channels"]);
+    NSLog(@"Bits Per Sample: %@", self.config[@"bitsPerSample"]);
+    NSLog(@"Time Slice: %@ ms", self.config[@"timeSlice"]);
+    NSLog(@"Silence Timeout: %@ ms", self.config[@"silenceTimeout"]);
+    NSLog(@"Minimum Speech Duration: %@ ms", self.config[@"minimumSpeechDuration"]);
+    NSLog(@"Continuous Recording: %@", self.config[@"continuousRecording"] ? @"Yes" : @"No");
+    NSLog(@"Only Record On Speaking: %@", self.config[@"onlyRecordOnSpeaking"] ? @"Yes" : @"No");
     
-    // Use energy-based VAD
-    BOOL isSpeech = detectSpeechWithEnergy(currentEnergy, vadState);
+    NSDictionary *features = self.config[@"features"];
+    NSLog(@"Noise Reduction: %@", [features[@"noiseReduction"] boolValue] ? @"Enabled" : @"Disabled");
+    NSLog(@"Echo Cancellation: %@", [features[@"echoCancellation"] boolValue] ? @"Enabled" : @"Disabled");
     
-    // Determine speech probability based on VAD result
-    float speechProbability = isSpeech ? 0.9f : 0.1f;
+    if ([self.config[@"detectionMethod"] isEqualToString:@"volume_threshold"]) {
+        NSLog(@"Volume Threshold: %@ dB", self.config[@"detectionParams"][@"threshold"]);
+    }
+}
+
+RCT_EXPORT_METHOD(init:(NSDictionary *)config
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        self.config = config;
+        self.debugMode = [config[@"debug"] boolValue];
+        
+        // Set up audio session
+        NSError *audioSessionError = nil;
+        AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+        [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord 
+                      withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
+                            error:&audioSessionError];
+        if (audioSessionError) {
+            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+        }
+        
+        // Set audio session mode based on echo cancellation setting
+        if ([self isFeatureEnabled:@"echoCancellation"]) {
+            [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
+        } else {
+            [audioSession setMode:AVAudioSessionModeMeasurement error:&audioSessionError];
+        }
+        if (audioSessionError) {
+            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+        }
+        
+        [audioSession setActive:YES error:&audioSessionError];
+        if (audioSessionError) {
+            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+        }
+        
+        // Initialize audio engine
+        self.audioEngine = [[AVAudioEngine alloc] init];
+        
+        // Configure audio engine based on config
+        AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+        AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
+        
+        // Use the hardware's sample rate instead of the one from config
+        double sampleRate = inputFormat.sampleRate;
+        NSNumber *channels = config[@"channels"];
+
+        // If the requested sample rate does not match the hardware's sample rate, pop a
+        // warning and print the HW sample rate
+        if (sampleRate != [config[@"sampleRate"] doubleValue]) {
+            if (self.debugMode) {
+                NSLog(@"RNRecordSpeech - Requested sample rate: %f", [config[@"sampleRate"] doubleValue]);
+                NSLog(@"RNRecordSpeech - Using hardware sample rate: %f", sampleRate);
+            }
+        }
+
+        
+        AVAudioFormat *recordingFormat = [[AVAudioFormat alloc] 
+                                          initWithCommonFormat:AVAudioPCMFormatFloat32
+                                          sampleRate:sampleRate 
+                                          channels:channels.unsignedIntegerValue 
+                                          interleaved:NO];
+        
+        if (self.debugMode) {
+            NSLog(@"RNRecordSpeech - Using hardware sample rate: %f", sampleRate);
+        }
+        
+        // Set up detection method
+        NSString *detectionMethod = config[@"detectionMethod"];
+        if ([detectionMethod isEqualToString:@"voice_activity_detection"]) {
+            self.speechRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale currentLocale]];
+            if (!self.speechRecognizer.isAvailable) {
+                [self throwException:@"SpeechRecognizerError" reason:@"Speech recognition is not available on this device."];
+            }
+        } else if ([detectionMethod isEqualToString:@"volume_threshold"]) {
+            if (![config[@"detectionParams"] objectForKey:@"threshold"]) {
+                [self throwException:@"ConfigurationError" reason:@"Threshold not specified for volume_threshold method."];
+            }
+        } else {
+            [self throwException:@"ConfigurationError" reason:@"Invalid detection method specified."];
+        }
+        
+        // Apply audio processing if features are enabled
+        AVAudioNode *lastNode = inputNode;
+        
+        if ([self isFeatureEnabled:@"noiseReduction"]) {
+            AVAudioUnitEQ *eqNode = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
+            [self.audioEngine attachNode:eqNode];
+            [self.audioEngine connect:lastNode to:eqNode format:recordingFormat];
+            
+            // Configure noise reduction
+            AVAudioUnitEQFilterParameters *noiseReductionFilter = eqNode.bands[0];
+            noiseReductionFilter.filterType = AVAudioUnitEQFilterTypeHighPass;
+            noiseReductionFilter.frequency = 80.0;
+            noiseReductionFilter.bandwidth = 1.0;
+            noiseReductionFilter.bypass = NO;
+            
+            lastNode = eqNode;
+        }
+        
+        resolve(@{@"status": @"initialized"});
+    } @catch (NSException *exception) {
+        reject(@"InitializationError", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        if (![self.audioEngine isRunning]) {
+            [self printRecordingParameters];
+
+            NSError *error = nil;
+            [self.audioEngine startAndReturnError:&error];
+            if (error) {
+                [self throwException:@"AudioEngineError" reason:error.localizedDescription];
+            }
+            
+            AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+            AVAudioFormat *recordingFormat = [inputNode outputFormatForBus:0];
+            
+            NSTimeInterval timeSlice = [self.config[@"timeSlice"] doubleValue] / 1000.0;
+            NSUInteger samplesPerSlice = timeSlice * recordingFormat.sampleRate;
+            
+            __block NSMutableData *audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
+            __block NSUInteger sampleCount = 0;
+            __block SFSpeechAudioBufferRecognitionRequest *recognitionRequest = nil;
+            __block SFSpeechRecognitionTask *recognitionTask = nil;
+            
+            if ([self.config[@"detectionMethod"] isEqualToString:@"voice_activity_detection"]) {
+                recognitionRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
+                recognitionRequest.taskHint = SFSpeechRecognitionTaskHintDictation;
+                recognitionTask = [self.speechRecognizer recognitionTaskWithRequest:recognitionRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
+                    // Handle continuous speech recognition results here
+                }];
+            }
+            
+            [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+                NSUInteger numberOfFrames = buffer.frameLength;
+                float *samples = buffer.floatChannelData[0];
+                
+                [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
+                sampleCount += numberOfFrames;
+                
+                if (sampleCount >= samplesPerSlice) {
+                    float speechProbability = [self detectSpeechInBuffer:audioBuffer withRecognitionRequest:recognitionRequest];
+                    
+                    NSString *base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
+                    
+                    NSDictionary *frameData = @{
+                        @"audioData": base64AudioData,
+                        @"speechProbability": @(speechProbability),
+                        @"info": [self getDebugInfo]
+                    };
+                    
+                    [self sendEventWithName:@"frame" body:frameData];
+                    
+                    audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
+                    sampleCount = 0;
+                }
+            }];
+            
+            resolve(@{@"status": @"started"});
+        } else {
+            resolve(@{@"status": @"already_running"});
+        }
+    } @catch (NSException *exception) {
+        reject(@"StartError", exception.reason, nil);
+    }
+}
+
+- (float)detectSpeechInBuffer:(NSData *)audioBuffer withRecognitionRequest:(SFSpeechAudioBufferRecognitionRequest *)recognitionRequest
+{
+    NSString *detectionMethod = self.config[@"detectionMethod"];
+    if ([detectionMethod isEqualToString:@"voice_activity_detection"]) {
+        return [self detectSpeechUsingVAD:audioBuffer withRecognitionRequest:recognitionRequest];
+    } else if ([detectionMethod isEqualToString:@"volume_threshold"]) {
+        return [self detectSpeechUsingVolumeThreshold:audioBuffer];
+    }
+    return 0.0;
+}
+
+
+- (float)detectSpeechUsingVAD:(NSData *)audioBuffer withRecognitionRequest:(SFSpeechAudioBufferRecognitionRequest *)recognitionRequest
+{
+    if (!self.recentSpeechProbabilities) {
+        self.recentSpeechProbabilities = [NSMutableArray array];
+        self.maxProbabilityBufferSize = 10; // Adjust this value as needed
+    }
+
+    if (recognitionRequest) {
+        AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:[[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:44100 channels:1 interleaved:NO] frameCapacity:audioBuffer.length / sizeof(float)];
+        memcpy(pcmBuffer.floatChannelData[0], audioBuffer.bytes, audioBuffer.length);
+        pcmBuffer.frameLength = audioBuffer.length / sizeof(float);
+        
+        [recognitionRequest appendAudioPCMBuffer:pcmBuffer];
+        
+        // Calculate speech probability based on audio energy
+        float totalEnergy = 0.0f;
+        float *samples = (float *)audioBuffer.bytes;
+        NSUInteger sampleCount = audioBuffer.length / sizeof(float);
+        
+        for (NSUInteger i = 0; i < sampleCount; i++) {
+            totalEnergy += samples[i] * samples[i];
+        }
+        
+        float avgEnergy = totalEnergy / sampleCount;
+        float normalizedEnergy = fmin(1.0f, fmax(0.0f, avgEnergy * 10)); // Adjust scaling factor as needed
+        
+        [self.recentSpeechProbabilities addObject:@(normalizedEnergy)];
+        if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
+            [self.recentSpeechProbabilities removeObjectAtIndex:0];
+        }
+        
+        // Calculate the average of recent probabilities
+        float sum = 0.0f;
+        for (NSNumber *prob in self.recentSpeechProbabilities) {
+            sum += prob.floatValue;
+        }
+        float averageProbability = sum / self.recentSpeechProbabilities.count;
+        
+        return averageProbability;
+    }
+    return 0.0;
+}
+
+- (float)detectSpeechUsingVolumeThreshold:(NSData *)audioBuffer
+{
+    float *samples = (float *)audioBuffer.bytes;
+    NSUInteger sampleCount = audioBuffer.length / sizeof(float);
     
-    NSLog(@"VAD Debug - Level: %f, Energy: %f, Threshold: %f, IsSpeech: %d", currentLevel, currentEnergy, vadState->threshold, isSpeech);
+    float sum = 0.0;
+    for (NSUInteger i = 0; i < sampleCount; i++) {
+        sum += samples[i] * samples[i];
+    }
     
+    float rms = sqrtf(sum / sampleCount);
+    float db = 20 * log10f(rms);
+    
+    float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue];
+    
+    // Calculate the probability using a Gaussian function
+    float variance = 21.6; // Calculated based on requirements
+    float probabilityAtThreshold = 0.8;
+    float maxProbability = 1.0;
+    
+    float dbDifference = db - threshold;
+    float gaussianFactor = -powf(dbDifference, 2) / (2 * variance);
+    float probability = maxProbability * exp(gaussianFactor);
+    
+    // Scale the probability so that it's exactly 0.8 at the threshold
+    probability = probability * (probabilityAtThreshold / maxProbability);
+    
+    // Clamp the probability between 0 and 1
+    probability = fmax(0.0, fmin(1.0, probability));
+    
+    return probability;
+}
+
+- (NSDictionary *)getDebugInfo
+{
+    // Implement this method to return any debug information you want to include
+    // This could include things like current audio levels, VAD scores, etc.
     return @{
-        @"speechProbability": @(speechProbability),
-        @"info": @{
-            @"level": @(currentLevel),
-            @"energy": @(currentEnergy),
-            @"vadThreshold": @(vadState->threshold)
+        @"currentTime": @([[NSDate date] timeIntervalSince1970]),
+        // Add more debug info as needed
+    };
+}
+
+RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        if ([self.audioEngine isRunning]) {
+            [self.audioEngine stop];
+            [self.audioEngine.inputNode removeTapOnBus:0];
+            
+            if (self.recognitionTask) {
+                [self.recognitionTask cancel];
+                self.recognitionTask = nil;
+            }
+            
+            if (self.debugMode) {
+                NSLog(@"RNRecordSpeech - Recording stopped");
+            }
+            
+            resolve(@{@"status": @"stopped"});
+        } else {
+            resolve(@{@"status": @"already_stopped"});
         }
-    };
-}
-
-void HandleInputBuffer(void *inUserData,
-                       AudioQueueRef inAQ,
-                       AudioQueueBufferRef inBuffer,
-                       const AudioTimeStamp *inStartTime,
-                       UInt32 inNumPackets,
-                       const AudioStreamPacketDescription *inPacketDesc)
-{
-    AQRecordState* pRecordState = (AQRecordState *)inUserData;
-
-    if (!pRecordState->mIsRunning) {
-        return;
-    }
-
-    // Apply the high-pass filter only if noise reduction is enabled
-    if (pRecordState->audioUnit != NULL) {
-        AudioUnitRender(pRecordState->audioUnit,
-                        0,
-                        inStartTime,
-                        0,
-                        inNumPackets,
-                        inBuffer);
-    }
-
-    // Write audio data to file
-    if (AudioFileWritePackets(pRecordState->mAudioFile,
-                              false,
-                              inBuffer->mAudioDataByteSize,
-                              inPacketDesc,
-                              pRecordState->mCurrentPacket,
-                              &inNumPackets,
-                              inBuffer->mAudioData
-                              ) == noErr) {
-        pRecordState->mCurrentPacket += inNumPackets;
-    }
-
-    [pRecordState->mSelf accumulateAndProcessBuffer:inBuffer];
-
-    // Re-enqueue the buffer for continued recording
-    AudioQueueEnqueueBuffer(pRecordState->mQueue, inBuffer, 0, NULL);
-}
-
-- (void)accumulateAndProcessBuffer:(AudioQueueBufferRef)inBuffer
-{
-    [accumulatedData appendBytes:inBuffer->mAudioData length:inBuffer->mAudioDataByteSize];
-    accumulatedSamples += inBuffer->mAudioDataByteSize / (_recordState.mDataFormat.mBitsPerChannel / 8);
-
-    if (accumulatedSamples >= samplesPerTimeSlice) {
-        [self processAccumulatedData];
+    } @catch (NSException *exception) {
+        reject(@"StopError", exception.reason, nil);
     }
 }
 
-
-- (void)processAccumulatedData
+- (void)cleanup
 {
-    NSData *data = [NSData dataWithData:accumulatedData];
-
-    NSDictionary *result = @{
-        @"speechProbability": @(0.0f),
-        @"info": @{@"level": @(-160.0f)}
-    };
+    if (self.debugMode) {
+        NSLog(@"RNRecordSpeech - Cleaning up resources");
+    }
     
-    if ([_recordState.detectionMethod isEqualToString:@"volume_threshold"]) {
-        result = [self detectSpeechWithLevel:data];
-    }  else if ([_recordState.detectionMethod isEqualToString:@"voice_activity_detection"]) {
-        result = detectSpeechWithVAD(data, _recordState.mDataFormat, &_vadState);
-    } else {
-        throwRNException(@"Invalid detection method", 1);
+    [self.audioEngine stop];
+    [self.audioEngine.inputNode removeTapOnBus:0];
+    
+    self.audioEngine = nil;
+    self.speechRecognizer = nil;
+    
+    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+    NSError *error = nil;
+    [audioSession setActive:NO error:&error];
+    if (error && self.debugMode) {
+        NSLog(@"RNRecordSpeech - Error deactivating audio session: %@", error.localizedDescription);
     }
+}
 
-    // Encode audio data
-    NSString *str = [data base64EncodedStringWithOptions:0];
-
-    // Send a single event with frame number, audio data, speech probability, and debug info
-    [self sendEventWithName:@"frame" body:@{
-        @"frameNumber": @(_recordState.frameNumber),
-        @"audioData": str,
-        @"speechProbability": result[@"speechProbability"],
-        @"info": result[@"info"]
-    }];
-
-    // Increment frame number
-    _recordState.frameNumber++;
-
-    // Reset accumulated data
-    accumulatedData = [NSMutableData data];
-    accumulatedSamples = 0;
+- (void)invalidate
+{
+    [self cleanup];
+    [super invalidate];
 }
 
 - (void)dealloc
 {
-    RCTLogInfo(@"dealloc");
-
-    // Ensure that recording is stopped if it is still running
-    if (_recordState.mIsRunning) {
-        [self stop:nil rejecter:nil];
-    }
-
-    // Dispose of the audio queue
-    if (_recordState.mQueue != NULL) {
-        AudioQueueDispose(_recordState.mQueue, true);
-        _recordState.mQueue = NULL;
-    }
-
-    // Clean up the Audio Unit only if it was initialized
-    if (_recordState.audioUnit != NULL) {
-        AudioUnitUninitialize(_recordState.audioUnit);
-        AudioComponentInstanceDispose(_recordState.audioUnit);
-        _recordState.audioUnit = NULL;
-    }
-    
-    if (self.audioEngine) {
-        [self.audioEngine stop];
-        self.audioEngine = nil;
-    }
+    [self cleanup];
 }
 
 @end

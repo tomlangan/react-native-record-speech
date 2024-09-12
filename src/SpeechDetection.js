@@ -14,7 +14,7 @@ export const defaultSpeechRecorderConfig = {
   detectionParams: {
     threshold: -30.0,
   },
-  sampleRate: 44100,
+  sampleRate: 48000,
   channels: 1,
   bitsPerSample: 16,
   wavFile: 'audio.wav',

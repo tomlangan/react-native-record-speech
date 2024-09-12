@@ -50,7 +50,7 @@ public class RNRecordSpeechModule extends ReactContextBaseJavaModule {
       
         Log.w(TAG, "Warning: Android implementation is not fully tested. Expect potential issues.");
       
-        sampleRate = config.hasKey("sampleRate") ? config.getInt("sampleRate") : 44100;
+        sampleRate = config.hasKey("sampleRate") ? config.getInt("sampleRate") : 48000;
         int bitsPerSample = config.hasKey("bitsPerSample") ? config.getInt("bitsPerSample") : 16;
         int channels = config.hasKey("channels") ? config.getInt("channels") : 1;
 
