@@ -21,13 +21,16 @@ export const defaultSpeechRecorderConfig = {
   continuousRecording: false,
   onlyRecordOnSpeaking: true,
   timeSlice: 400,
-  silenceTimeout: 800,
+  silenceTimeout: 400,
   minimumSpeechDuration: 200,
   debug: false,
   features: {
     noiseReduction: true,
     echoCancellation: true,
-  }
+    normalization: true,  
+    inputGain: true,
+  },
+  inputGain: 0.8,
 };
 
 // avoid dependency on native iOS uuid pod 
@@ -73,8 +76,6 @@ export class SpeechDetection extends EventEmitter {
 
     await RNRecordSpeech.init(this.config);
 
-    this.setupEventListeners();
-
     if (!this.encoder) {
       this.encoder = new lamejs.Mp3Encoder(1, this.config.sampleRate, 128);
     }
@@ -102,6 +103,8 @@ export class SpeechDetection extends EventEmitter {
   async startRecording() {
     if (!this.recording) {
       try {
+        this.setupEventListeners();
+            
         await RNRecordSpeech.start();
         this.recording = true;
         this.emit('recording', true);

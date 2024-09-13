@@ -17,10 +17,21 @@
 - (void)init:(NSDictionary *)config
     resolver:(RCTPromiseResolveBlock)resolve
     rejecter:(RCTPromiseRejectBlock)reject;
+
 - (void)start:(RCTPromiseResolveBlock)resolve
      rejecter:(RCTPromiseRejectBlock)reject;
+
 - (void)stop:(RCTPromiseResolveBlock)resolve
     rejecter:(RCTPromiseRejectBlock)reject;
+
 - (void)cleanup;
+- (void)stopInternal;
+
+- (void)setupAudioSession;
+- (void)setupAudioProcessingChain;
+- (void)adjustNormalization:(float)maxAmplitude;
+- (NSDictionary *)detectSpeechInBuffer:(NSData *)audioBuffer;
+- (NSDictionary *)detectSpeechUsingVAD:(NSData *)audioBuffer;
+- (NSDictionary *)detectSpeechUsingVolumeThreshold:(NSData *)audioBuffer;
 
 @end

@@ -4,6 +4,12 @@
 
 @implementation RNRecordSpeech {
     NSUInteger _frameCounter;
+    AVAudioUnitEQ *_normalizationEQ;
+    float _runningMaxAmplitude;
+    NSUInteger _sampleCounter;
+    NSUInteger _normalizationInterval;
+    AVAudioMixerNode *_mixerNode;
+    AVAudioFormat *_recordingFormat;
 }
 
 RCT_EXPORT_MODULE()
@@ -51,6 +57,10 @@ RCT_EXPORT_MODULE()
     return int16Data;
 }
 
+- (BOOL)isInputGainSettable {
+    return [[AVAudioSession sharedInstance] isInputGainSettable];
+}
+
 RCT_EXPORT_METHOD(init:(NSDictionary *)config
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -59,80 +69,33 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         self.config = config;
         self.debugMode = [config[@"debug"] boolValue];
         
-        // Set up audio session
-        NSError *audioSessionError = nil;
-        AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-        [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord 
-                      withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker
-                            error:&audioSessionError];
-        if (audioSessionError) {
-            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-        }
-        
-        // Set audio session mode based on echo cancellation setting
-        if ([self isFeatureEnabled:@"echoCancellation"]) {
-            [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
-        } else {
-            [audioSession setMode:AVAudioSessionModeMeasurement error:&audioSessionError];
-        }
-        if (audioSessionError) {
-            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-        }
-        
-        [audioSession setActive:YES error:&audioSessionError];
-        if (audioSessionError) {
-            [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-        }
-        
         // Initialize audio engine
         self.audioEngine = [[AVAudioEngine alloc] init];
         
-        // Configure audio engine based on config
+        // Configure recording format
         AVAudioInputNode *inputNode = self.audioEngine.inputNode;
         AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
         
-        // Use the hardware's sample rate instead of the one from config
         double sampleRate = inputFormat.sampleRate;
-        NSNumber *channels = config[@"channels"];
+        NSUInteger channels = [self.config[@"channels"] unsignedIntegerValue];
         
-        AVAudioFormat *recordingFormat = [[AVAudioFormat alloc] 
-                                          initWithCommonFormat:AVAudioPCMFormatFloat32
-                                          sampleRate:sampleRate 
-                                          channels:channels.unsignedIntegerValue 
-                                          interleaved:NO];
-        
-        // Set up detection method
-        NSString *detectionMethod = config[@"detectionMethod"];
-        if ([detectionMethod isEqualToString:@"voice_activity_detection"]) {
-            self.speechRecognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale currentLocale]];
-            if (!self.speechRecognizer.isAvailable) {
-                [self throwException:@"SpeechRecognizerError" reason:@"Speech recognition is not available on this device."];
-            }
-        } else if ([detectionMethod isEqualToString:@"volume_threshold"]) {
-            if (![config[@"detectionParams"] objectForKey:@"threshold"]) {
-                [self throwException:@"ConfigurationError" reason:@"Threshold not specified for volume_threshold method."];
-            }
-        } else {
-            [self throwException:@"ConfigurationError" reason:@"Invalid detection method specified."];
+        // Ensure we're using a valid channel count
+        if (channels == 0 || channels > 2) {
+            channels = inputFormat.channelCount;
         }
         
-        // Apply audio processing if features are enabled
-        AVAudioNode *lastNode = inputNode;
+        _recordingFormat = [[AVAudioFormat alloc] 
+                            initWithCommonFormat:AVAudioPCMFormatFloat32
+                            sampleRate:sampleRate 
+                            channels:channels 
+                            interleaved:NO];
         
-        if ([self isFeatureEnabled:@"noiseReduction"]) {
-            AVAudioUnitEQ *eqNode = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
-            [self.audioEngine attachNode:eqNode];
-            [self.audioEngine connect:lastNode to:eqNode format:recordingFormat];
-            
-            // Configure noise reduction
-            AVAudioUnitEQFilterParameters *noiseReductionFilter = eqNode.bands[0];
-            noiseReductionFilter.filterType = AVAudioUnitEQFilterTypeHighPass;
-            noiseReductionFilter.frequency = 80.0;
-            noiseReductionFilter.bandwidth = 1.0;
-            noiseReductionFilter.bypass = NO;
-            
-            lastNode = eqNode;
+        if (!_recordingFormat) {
+            NSLog(@"Failed to create valid recording format. Using input format.");
+            _recordingFormat = inputFormat;
         }
+        
+        NSLog(@"Audio initialization complete. Recording format: %@", _recordingFormat);
         
         resolve(@{@"status": @"initialized"});
     } @catch (NSException *exception) {
@@ -140,81 +103,215 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     }
 }
 
+- (void)setupAudioSession
+{
+    NSError *audioSessionError = nil;
+    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+    
+    // Use PlayAndRecord category with specific options
+    AVAudioSessionCategoryOptions options = 
+        AVAudioSessionCategoryOptionDefaultToSpeaker |
+        AVAudioSessionCategoryOptionAllowBluetooth |
+        AVAudioSessionCategoryOptionMixWithOthers;
+    
+    [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
+                  withOptions:options
+                        error:&audioSessionError];
+    if (audioSessionError) {
+        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+    }
+    
+    // Set audio session mode based on echo cancellation setting
+    if ([self isFeatureEnabled:@"echoCancellation"]) {
+        [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
+    } else {
+        [audioSession setMode:AVAudioSessionModeMeasurement error:&audioSessionError];
+    }
+    if (audioSessionError) {
+        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+    }
+    
+    // Disable microphone audio routing to output
+    [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&audioSessionError];
+    if (audioSessionError) {
+        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+    }
+    
+    // Apply input gain if the feature is enabled and supported
+    if ([self isFeatureEnabled:@"inputGain"] && [self isInputGainSettable]) {
+        float inputGainValue = [self.config[@"inputGainValue"] floatValue] ?: 0.8;
+        inputGainValue = MAX(0.0, MIN(1.0, inputGainValue)); // Ensure value is between 0.0 and 1.0
+        
+        NSError *gainError = nil;
+        BOOL success = [audioSession setInputGain:inputGainValue error:&gainError];
+        if (!success) {
+            NSLog(@"Failed to set input gain: %@", gainError.localizedDescription);
+        }
+    }
+
+    [audioSession setActive:YES error:&audioSessionError];
+    if (audioSessionError) {
+        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+    }
+}
+
+- (void)setupAudioProcessingChain {
+    AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+    AVAudioNode *lastNode = inputNode;
+    
+    if ([self isFeatureEnabled:@"noiseReduction"]) {
+        AVAudioUnitEQ *eqNode = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
+        [self.audioEngine attachNode:eqNode];
+        [self.audioEngine connect:lastNode to:eqNode format:_recordingFormat];
+        
+        // Configure noise reduction
+        AVAudioUnitEQFilterParameters *noiseReductionFilter = eqNode.bands[0];
+        noiseReductionFilter.filterType = AVAudioUnitEQFilterTypeHighPass;
+        noiseReductionFilter.frequency = 80.0;
+        noiseReductionFilter.bandwidth = 1.0;
+        noiseReductionFilter.bypass = NO;
+        
+        lastNode = eqNode;
+    }
+    
+    if ([self isFeatureEnabled:@"normalization"]) {
+        // Add normalization EQ
+        _normalizationEQ = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
+        [self.audioEngine attachNode:_normalizationEQ];
+        [self.audioEngine connect:lastNode to:_normalizationEQ format:_recordingFormat];
+        
+        // Configure normalization
+        AVAudioUnitEQFilterParameters *normalizationFilter = _normalizationEQ.bands[0];
+        normalizationFilter.filterType = AVAudioUnitEQFilterTypeParametric;
+        normalizationFilter.frequency = 1000.0; // Center frequency
+        normalizationFilter.bandwidth = 2.0;
+        normalizationFilter.gain = 0.0; // Initial gain
+        normalizationFilter.bypass = NO;
+        
+        lastNode = _normalizationEQ;
+    }
+    
+    // Connect the last node to a mixer node
+    _mixerNode = [[AVAudioMixerNode alloc] init];
+    [self.audioEngine attachNode:_mixerNode];
+    [self.audioEngine connect:lastNode to:_mixerNode format:_recordingFormat];
+    
+    // Important: Do not connect the mixer to the main mixer
+    // This prevents the input from being routed to the output
+}
+
 RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
     @try {
-        if (![self.audioEngine isRunning]) {
-            NSError *error = nil;
-            [self.audioEngine startAndReturnError:&error];
-            if (error) {
-                [self throwException:@"AudioEngineError" reason:error.localizedDescription];
+        if ([self.audioEngine isRunning]) {
+            // call stopInternal to clean up the audio engine
+            [self stopInternal];
+        }
+        
+        // Set up audio session
+        [self setupAudioSession];
+        
+        // Set up the audio processing chain
+        [self setupAudioProcessingChain];
+        
+        NSError *error = nil;
+        [self.audioEngine startAndReturnError:&error];
+        if (error) {
+            [self throwException:@"AudioEngineError" reason:error.localizedDescription];
+        }
+
+        _frameCounter = 0; // Initialize frame counter
+        
+        // Initialize normalization variables
+        if ([self isFeatureEnabled:@"normalization"]) {
+            _runningMaxAmplitude = 0.0;
+            _sampleCounter = 0;
+            _normalizationInterval = 1 * _recordingFormat.sampleRate; // best for 2-3 second recordings
+        }
+
+        NSTimeInterval timeSlice = [self.config[@"timeSlice"] doubleValue] / 1000.0;
+        NSUInteger samplesPerSlice = timeSlice * _recordingFormat.sampleRate;
+        
+        __block NSMutableData *audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
+        __block NSUInteger sampleCount = 0;
+        
+        [self.audioEngine.inputNode installTapOnBus:0 bufferSize:1024 format:_recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+           NSUInteger numberOfFrames = buffer.frameLength;
+            float *samples = buffer.floatChannelData[0];
+
+            // check for the normalization feature flag
+            if ([self isFeatureEnabled:@"normalization"]) {
+                // Calculate max amplitude for normalization
+                float maxAmplitude = 0.0;
+                vDSP_maxmgv(samples, 1, &maxAmplitude, numberOfFrames);
+                self->_runningMaxAmplitude = MAX(self->_runningMaxAmplitude, maxAmplitude);
+                
+                self->_sampleCounter += numberOfFrames;
+                if (self->_sampleCounter >= self->_normalizationInterval) {
+                    // Adjust normalization every 5 seconds
+                    [self adjustNormalization:self->_runningMaxAmplitude];
+                    self->_runningMaxAmplitude = 0.0;
+                    self->_sampleCounter = 0;
+                }
             }
             
-            _frameCounter = 0; // Initialize frame counter
+            [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
+            sampleCount += numberOfFrames;
             
-            AVAudioInputNode *inputNode = self.audioEngine.inputNode;
-            AVAudioFormat *recordingFormat = [inputNode outputFormatForBus:0];
-            
-            NSTimeInterval timeSlice = [self.config[@"timeSlice"] doubleValue] / 1000.0;
-            NSUInteger samplesPerSlice = timeSlice * recordingFormat.sampleRate;
-            
-            __block NSMutableData *audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
-            __block NSUInteger sampleCount = 0;
-            
-            NSLog(@"bitsPerSample: %@", self.config[@"bitsPerSample"]);
-            NSLog(@"sampleRate: %f", recordingFormat.sampleRate);
-            NSLog(@"channels: %lu", (unsigned long)recordingFormat.channelCount);
-            NSLog(@"timeSlice: %f", timeSlice);
-            NSLog(@"samplesPerSlice: %lu", (unsigned long)samplesPerSlice);
+            if (sampleCount >= samplesPerSlice) {
+                self->_frameCounter++; // Increment frame counter
 
-            [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
-                NSUInteger numberOfFrames = buffer.frameLength;
-                float *samples = buffer.floatChannelData[0];
+                NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
                 
-                [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
-                sampleCount += numberOfFrames;
-                
-                if (sampleCount >= samplesPerSlice) {
-                    self->_frameCounter++; // Increment frame counter
+                NSString *base64AudioData = nil;
+                if ([self.config[@"bitsPerSample"] unsignedIntegerValue] == 16) {
 
-                    NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
-                    
-                    NSString *base64AudioData = nil;
-                    if ([self.config[@"bitsPerSample"] unsignedIntegerValue] == 16) {
+                    NSData *int16AudioData = [self convertFloat32ToInt16:(float *)audioBuffer.bytes length:sampleCount];
 
-                        NSData *int16AudioData = [self convertFloat32ToInt16:(float *)audioBuffer.bytes length:sampleCount];
-
-                        base64AudioData = [int16AudioData base64EncodedStringWithOptions:0];
-                    } else {
-                        NSLog(@"Using float32 audio data");
-                        // Default to float32 if bitsPerSample is not 16 or not specified
-                        base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
-                    }
-
-                    NSLog(@"base64AudioData length: %lu", (unsigned long)[base64AudioData length]);
-
-                    NSDictionary *frameData = @{
-                        @"audioData": base64AudioData,
-                        @"frameNumber": @(self->_frameCounter),
-                        @"speechProbability": detectionResults[@"speechProbability"],
-                        @"info": detectionResults[@"info"]
-                    };
-                    
-                    [self sendEventWithName:@"frame" body:frameData];
-                    
-                    audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
-                    sampleCount = 0;
+                    base64AudioData = [int16AudioData base64EncodedStringWithOptions:0];
+                } else {
+                    NSLog(@"Using float32 audio data");
+                    // Default to float32 if bitsPerSample is not 16 or not specified
+                    base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
                 }
-            }];
-            
-            resolve(@{@"status": @"started"});
-        } else {
-            resolve(@{@"status": @"already_running"});
-        }
+
+                NSLog(@"base64AudioData length: %lu", (unsigned long)[base64AudioData length]);
+
+                NSDictionary *frameData = @{
+                    @"audioData": base64AudioData,
+                    @"frameNumber": @(self->_frameCounter),
+                    @"speechProbability": detectionResults[@"speechProbability"],
+                    @"info": detectionResults[@"info"]
+                };
+                
+                [self sendEventWithName:@"frame" body:frameData];
+                
+                audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
+                sampleCount = 0;
+            }
+        }];
+        
+        resolve(@{@"status": @"started"});
     } @catch (NSException *exception) {
         reject(@"StartError", exception.reason, nil);
     }
+}
+
+- (void)adjustNormalization:(float)maxAmplitude {
+    if (![self isFeatureEnabled:@"normalization"] || !_normalizationEQ) {
+        return;
+    }
+    
+    float targetAmplitude = 0.8; 
+    float gainAdjustment = 20 * log10f(targetAmplitude / maxAmplitude);
+    
+    // Limit the gain adjustment to avoid excessive amplification
+    gainAdjustment = MIN(gainAdjustment, 30.0); 
+    gainAdjustment = MAX(gainAdjustment, -20.0);
+    
+    AVAudioUnitEQFilterParameters *normalizationFilter = _normalizationEQ.bands[0];
+    normalizationFilter.gain = gainAdjustment;
 }
 
 - (NSDictionary*)detectSpeechInBuffer:(NSData *)audioBuffer
@@ -326,30 +423,13 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                         @"maxSample": @(maxSample)}};
 }
 
-RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
-                  rejecter:(RCTPromiseRejectBlock)reject)
+//Define internal routine stopInternal
+- (void)stopInternal
 {
-    @try {
-        if ([self.audioEngine isRunning]) {
-            [self.audioEngine stop];
-            [self.audioEngine.inputNode removeTapOnBus:0];
-            
-            if (self.recognitionTask) {
-                [self.recognitionTask cancel];
-                self.recognitionTask = nil;
-            }
-            
-            resolve(@{@"status": @"stopped"});
-        } else {
-            resolve(@{@"status": @"already_stopped"});
-        }
-    } @catch (NSException *exception) {
-        reject(@"StopError", exception.reason, nil);
+    if (![self.audioEngine isRunning]) {
+        return;
     }
-}
 
-- (void)cleanup
-{
     [self.audioEngine stop];
     [self.audioEngine.inputNode removeTapOnBus:0];
     
@@ -358,16 +438,48 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
         self.recognitionTask = nil;
     }
     
-    self.recognitionRequest = nil;
+    // Remove all attached nodes except the input and output nodes
+    for (AVAudioNode *node in self.audioEngine.attachedNodes) {
+        if (node != self.audioEngine.inputNode && node != self.audioEngine.outputNode) {
+            [self.audioEngine detachNode:node];
+        }
+    }
+    
+    _mixerNode = nil;
+    _normalizationEQ = nil;
+    
+    // Deactivate audio session
+    NSError *error = nil;
+    [[AVAudioSession sharedInstance] setActive:NO error:&error];
+    if (error) {
+        NSLog(@"Error deactivating audio session: %@", error.localizedDescription);
+    }
+}
+
+RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        if (![self.audioEngine isRunning]) {
+            resolve(@{@"status": @"already_stopped"});
+            return;
+        }
+
+        [self stopInternal];
+
+        resolve(@{@"status": @"stopped"});
+
+    } @catch (NSException *exception) {
+        reject(@"StopError", exception.reason, nil);
+    }
+}
+
+- (void)cleanup
+{
+    [self stopInternal];
+
     self.audioEngine = nil;
     self.speechRecognizer = nil;
-    
-    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-    NSError *error = nil;
-    [audioSession setActive:NO error:&error];
-    if (error && self.debugMode) {
-        NSLog(@"RNRecordSpeech - Error deactivating audio session: %@", error.localizedDescription);
-    }
 }
 
 - (void)invalidate
