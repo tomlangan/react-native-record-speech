@@ -307,19 +307,21 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     }
     
     float averageAmplitude = sum / sampleCount;
-    float db = 20 * log10f(averageAmplitude);
+    float maxdb = 20 * log10f(maxAmplitude);
+    float averagedb = 20 * log10f(averageAmplitude);
+
     
     float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue];
     
     // Calculate probability using a sigmoid function
     float sensitivity = 5.0; // Adjust this value to change the steepness of the probability curve
-    float probability = 1.0 / (1.0 + expf(-sensitivity * (db - threshold)));
+    float probability = 1.0 / (1.0 + expf(-sensitivity * (maxdb - threshold)));
     
     if (self.debugMode) {
-        NSLog(@"RNRecordSpeech - Volume Threshold: Average dB: %.2f, Max Amplitude: %.2f, Threshold: %.2f, Probability: %.2f", db, maxAmplitude, threshold, probability);
+        NSLog(@"RNRecordSpeech - Volume Threshold: Average dB: %.2f, Max dB: %.2f, Threshold: %.2f, Probability: %.2f", averagedb, maxdb, threshold, probability);
     }
     
-    return @{@"speechProbability": @(probability), @"info": @{@"averageDb": @(db), @"maxAmplitude": @(maxAmplitude)}};
+    return @{@"speechProbability": @(probability), @"info": @{@"avaragedb": @(averagedb), @"maxdb": @(maxdb)}};
 }
 
 
