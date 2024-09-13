@@ -2,7 +2,9 @@
 #import <React/RCTLog.h>
 #import <Accelerate/Accelerate.h>
 
-@implementation RNRecordSpeech
+@implementation RNRecordSpeech {
+    NSUInteger _frameCounter;
+}
 
 RCT_EXPORT_MODULE()
 
@@ -149,6 +151,8 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                 [self throwException:@"AudioEngineError" reason:error.localizedDescription];
             }
             
+            _frameCounter = 0; // Initialize frame counter
+            
             AVAudioInputNode *inputNode = self.audioEngine.inputNode;
             AVAudioFormat *recordingFormat = [inputNode outputFormatForBus:0];
             
@@ -172,6 +176,8 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                 sampleCount += numberOfFrames;
                 
                 if (sampleCount >= samplesPerSlice) {
+                    self->_frameCounter++; // Increment frame counter
+
                     NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
                     
                     NSString *base64AudioData = nil;
@@ -190,6 +196,7 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
 
                     NSDictionary *frameData = @{
                         @"audioData": base64AudioData,
+                        @"frameNumber": @(self->_frameCounter),
                         @"speechProbability": detectionResults[@"speechProbability"],
                         @"info": detectionResults[@"info"]
                     };

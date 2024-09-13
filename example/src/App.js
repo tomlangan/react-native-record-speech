@@ -61,6 +61,7 @@ const App = () => {
     return () => {
       if (speechDetectionRef.current) {
         speechDetectionRef.current.cleanup();
+        speechDetectionRef.current = null;
       }
     };
   }, [detectionMethod, volumeThreshold, continuousRecording, onlyRecordOnSpeaking, silenceTimeout, minimumSpeechDuration, noiseReduction, echoCancellation]);

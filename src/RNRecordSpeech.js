@@ -25,7 +25,6 @@ console.log("eventEmitter", eventEmitter);
 
 class RNRecordSpeech {
   constructor() {
-    this.listeners = new Map();
   }
 
   async init(config) {
@@ -37,17 +36,8 @@ class RNRecordSpeech {
       console.warn(`Unsupported event type: ${event}. Supported events: `, supportedEvents.join(', ')); 
       return;
     }
-    const listener = eventEmitter.addListener(event, callback);
-    this.listeners.set(callback, listener);
-    return () => this.off(event, callback);
-  }
-
-  off(event, callback) {
-    const listener = this.listeners.get(callback);
-    if (listener) {
-      listener.remove();
-      this.listeners.delete(callback);
-    }
+    eventEmitter.addListener(event, callback);
+    return () => eventEmitter.removeAllListeners(event);
   }
 
   start() {
