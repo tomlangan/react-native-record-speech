@@ -93,10 +93,9 @@ export class SpeechDetection extends EventEmitter {
   }
 
   onFrame = (data) => {
-
     this.onDataAvailable(data.audioData);
     const isSpeaking = data.speechProbability > 0.75;
-    console.log(`${data.frameNumber} ${isSpeaking ? "+" : "-"}`);
+    this.config.debug && console.log(`${data.frameNumber} ${isSpeaking ? "+" : "-"} PROB ${data.speechProbability} `, data.info);
     this.processSpeechEvent(isSpeaking);
   }
 
@@ -104,7 +103,7 @@ export class SpeechDetection extends EventEmitter {
     if (!this.recording) {
       try {
         this.setupEventListeners();
-            
+
         await RNRecordSpeech.start();
         this.recording = true;
         this.emit('recording', true);
@@ -288,7 +287,7 @@ export class SpeechDetection extends EventEmitter {
   }
 
   setSpeakingState(state) {
-    console.log(`Speaking state: ${this.speakingState} -> ${state}`);
+    this.config.debug && console.log(`Speaking state: ${this.speakingState} -> ${state}`);
     this.speakingState = state;
   }
 
