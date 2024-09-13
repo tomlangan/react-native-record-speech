@@ -36,7 +36,8 @@
   "scripts": {
     "example": "yarn workspace react-native-record-speech-example",
     "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
-    "release": "release-it"
+    "release": "release-it",
+    "prepare": "bob build"
   },
   "keywords": [
     "react-native",

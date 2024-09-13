@@ -1,0 +1,1 @@
+{"version":3,"names":["RNRecordSpeech","SpeechDetection","defaultSpeechRecorderConfig"],"sourceRoot":"../../src","sources":["index.js"],"mappings":";;AAAA,OAAOA,cAAc,MAAM,qBAAkB;AAC7C,SAASC,eAAe,EAAEC,2BAA2B,QAAQ,sBAAmB;AAEhF,SAASD,eAAe,EAAEC,2BAA2B;AACrD,eAAeF,cAAc","ignoreList":[]}
