@@ -1,5 +1,6 @@
 #import "RNRecordSpeech.h"
 #import <React/RCTLog.h>
+#import <Accelerate/Accelerate.h>
 
 @implementation RNRecordSpeech
 
@@ -28,28 +29,24 @@ RCT_EXPORT_MODULE()
     return NO;
 }
 
-// Add this new method to print debug information
-- (void)printRecordingParameters {
-    if (!self.debugMode) return;
+- (NSData *)convertFloat32ToInt16:(float *)floatData length:(NSUInteger)length {
+    NSMutableData *int16Data = [NSMutableData dataWithLength:length * sizeof(int16_t)];
+    int16_t *int16Samples = (int16_t *)int16Data.bytes;
     
-    NSLog(@"RNRecordSpeech - Recording Parameters:");
-    NSLog(@"Detection Method: %@", self.config[@"detectionMethod"]);
-    NSLog(@"Sample Rate: %@", self.config[@"sampleRate"]);
-    NSLog(@"Channels: %@", self.config[@"channels"]);
-    NSLog(@"Bits Per Sample: %@", self.config[@"bitsPerSample"]);
-    NSLog(@"Time Slice: %@ ms", self.config[@"timeSlice"]);
-    NSLog(@"Silence Timeout: %@ ms", self.config[@"silenceTimeout"]);
-    NSLog(@"Minimum Speech Duration: %@ ms", self.config[@"minimumSpeechDuration"]);
-    NSLog(@"Continuous Recording: %@", self.config[@"continuousRecording"] ? @"Yes" : @"No");
-    NSLog(@"Only Record On Speaking: %@", self.config[@"onlyRecordOnSpeaking"] ? @"Yes" : @"No");
+    // Create a temporary float buffer to hold the scaled values
+    float *scaledFloatData = (float *)malloc(length * sizeof(float));
     
-    NSDictionary *features = self.config[@"features"];
-    NSLog(@"Noise Reduction: %@", [features[@"noiseReduction"] boolValue] ? @"Enabled" : @"Disabled");
-    NSLog(@"Echo Cancellation: %@", [features[@"echoCancellation"] boolValue] ? @"Enabled" : @"Disabled");
+    // Scale floating-point values to 16-bit integer range
+    float scalingFactor = 32767.0f;
+    vDSP_vsmul(floatData, 1, &scalingFactor, scaledFloatData, 1, length);
     
-    if ([self.config[@"detectionMethod"] isEqualToString:@"volume_threshold"]) {
-        NSLog(@"Volume Threshold: %@ dB", self.config[@"detectionParams"][@"threshold"]);
-    }
+    // Convert scaled floating-point values to 16-bit integers
+    vDSP_vfixr16(scaledFloatData, 1, int16Samples, 1, length);
+    
+    // Free the temporary float buffer
+    free(scaledFloatData);
+    
+    return int16Data;
 }
 
 RCT_EXPORT_METHOD(init:(NSDictionary *)config
@@ -95,26 +92,12 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         // Use the hardware's sample rate instead of the one from config
         double sampleRate = inputFormat.sampleRate;
         NSNumber *channels = config[@"channels"];
-
-        // If the requested sample rate does not match the hardware's sample rate, pop a
-        // warning and print the HW sample rate
-        if (sampleRate != [config[@"sampleRate"] doubleValue]) {
-            if (self.debugMode) {
-                NSLog(@"RNRecordSpeech - Requested sample rate: %f", [config[@"sampleRate"] doubleValue]);
-                NSLog(@"RNRecordSpeech - Using hardware sample rate: %f", sampleRate);
-            }
-        }
-
         
         AVAudioFormat *recordingFormat = [[AVAudioFormat alloc] 
                                           initWithCommonFormat:AVAudioPCMFormatFloat32
                                           sampleRate:sampleRate 
                                           channels:channels.unsignedIntegerValue 
                                           interleaved:NO];
-        
-        if (self.debugMode) {
-            NSLog(@"RNRecordSpeech - Using hardware sample rate: %f", sampleRate);
-        }
         
         // Set up detection method
         NSString *detectionMethod = config[@"detectionMethod"];
@@ -160,8 +143,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
 {
     @try {
         if (![self.audioEngine isRunning]) {
-            [self printRecordingParameters];
-
             NSError *error = nil;
             [self.audioEngine startAndReturnError:&error];
             if (error) {
@@ -176,8 +157,13 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
             
             __block NSMutableData *audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
             __block NSUInteger sampleCount = 0;
-            __block NSDate *lastFrameTime = [NSDate date];
             
+            NSLog(@"bitsPerSample: %@", self.config[@"bitsPerSample"]);
+            NSLog(@"sampleRate: %f", recordingFormat.sampleRate);
+            NSLog(@"channels: %lu", (unsigned long)recordingFormat.channelCount);
+            NSLog(@"timeSlice: %f", timeSlice);
+            NSLog(@"samplesPerSlice: %lu", (unsigned long)samplesPerSlice);
+
             [inputNode installTapOnBus:0 bufferSize:1024 format:recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
                 NSUInteger numberOfFrames = buffer.frameLength;
                 float *samples = buffer.floatChannelData[0];
@@ -185,17 +171,23 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                 [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
                 sampleCount += numberOfFrames;
                 
-                NSDate *currentTime = [NSDate date];
-                NSTimeInterval timeSinceLastFrame = [currentTime timeIntervalSinceDate:lastFrameTime];
-                
-                if (sampleCount >= samplesPerSlice && timeSinceLastFrame >= timeSlice) {
-                    if (self.debugMode) {
-                        NSLog(@"RNRecordSpeech - Frame emitted: sampleCount: %lu, timeSinceLastFrame: %.3f", (unsigned long)sampleCount, timeSinceLastFrame);
-                    }
+                if (sampleCount >= samplesPerSlice) {
                     NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
                     
-                    NSString *base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
-                    
+                    NSString *base64AudioData = nil;
+                    if ([self.config[@"bitsPerSample"] unsignedIntegerValue] == 16) {
+
+                        NSData *int16AudioData = [self convertFloat32ToInt16:(float *)audioBuffer.bytes length:sampleCount];
+
+                        base64AudioData = [int16AudioData base64EncodedStringWithOptions:0];
+                    } else {
+                        NSLog(@"Using float32 audio data");
+                        // Default to float32 if bitsPerSample is not 16 or not specified
+                        base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
+                    }
+
+                    NSLog(@"base64AudioData length: %lu", (unsigned long)[base64AudioData length]);
+
                     NSDictionary *frameData = @{
                         @"audioData": base64AudioData,
                         @"speechProbability": detectionResults[@"speechProbability"],
@@ -206,7 +198,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                     
                     audioBuffer = [NSMutableData dataWithCapacity:samplesPerSlice * sizeof(float)];
                     sampleCount = 0;
-                    lastFrameTime = currentTime;
                 }
             }];
             
@@ -228,7 +219,7 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         return [self detectSpeechUsingVolumeThreshold:audioBuffer];
     }
     
-    [self throwException:@"DetectionError" reason:@"Invalid detection method specified."]; // Fixed line
+    [self throwException:@"DetectionError" reason:@"Invalid detection method specified."];
     return nil;
 }
 
@@ -242,50 +233,43 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     float speechProbability = 0.0;
     NSDictionary *info = @{};
 
-    AVAudioInputNode *inputNode = self.audioEngine.inputNode;
-    AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
-    
-    // Use the hardware's sample rate instead of the one from config
-    double sampleRate = inputFormat.sampleRate;
-    NSNumber *channels = self.config[@"channels"];
-
     AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 
-                                                            sampleRate:sampleRate
-                                                              channels:channels.unsignedIntegerValue
+                                                            sampleRate:[self.config[@"sampleRate"] doubleValue]
+                                                              channels:[self.config[@"channels"] unsignedIntegerValue]
                                                             interleaved:NO];
     AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
                                                                 frameCapacity:audioBuffer.length / sizeof(float)];
     memcpy(pcmBuffer.floatChannelData[0], audioBuffer.bytes, audioBuffer.length);
     pcmBuffer.frameLength = audioBuffer.length / sizeof(float);
 
-    
-    // Calculate speech probability based on audio energy
-    float totalEnergy = 0.0f;
-    float *samples = (float *)audioBuffer.bytes;
-    NSUInteger sampleCount = audioBuffer.length / sizeof(float);
-    
-    for (NSUInteger i = 0; i < sampleCount; i++) {
-        totalEnergy += samples[i] * samples[i];
+    if (!self.recognitionTask) {
+        self.recognitionRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
+        self.recognitionRequest.shouldReportPartialResults = YES;
+
+        __weak typeof(self) weakSelf = self;
+        self.recognitionTask = [self.speechRecognizer recognitionTaskWithRequest:self.recognitionRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (result) {
+                float confidence = result.bestTranscription.segments.lastObject.confidence;
+                [strongSelf.recentSpeechProbabilities addObject:@(confidence)];
+                if (strongSelf.recentSpeechProbabilities.count > strongSelf.maxProbabilityBufferSize) {
+                    [strongSelf.recentSpeechProbabilities removeObjectAtIndex:0];
+                }
+            }
+        }];
     }
-    
-    float avgEnergy = totalEnergy / sampleCount;
-    float normalizedEnergy = fmin(1.0f, fmax(0.0f, avgEnergy * 10)); // Adjust scaling factor as needed
-    
-    [self.recentSpeechProbabilities addObject:@(normalizedEnergy)];
-    if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
-        [self.recentSpeechProbabilities removeObjectAtIndex:0];
-    }
-    
-    // Calculate the average of recent probabilities
+
+    [self.recognitionRequest appendAudioPCMBuffer:pcmBuffer];
+
+    // Calculate average probability
     float sum = 0.0f;
     for (NSNumber *prob in self.recentSpeechProbabilities) {
         sum += prob.floatValue;
     }
-    speechProbability = sum / self.recentSpeechProbabilities.count;
+    speechProbability = self.recentSpeechProbabilities.count > 0 ? sum / self.recentSpeechProbabilities.count : 0.0f;
 
     info = @{
-        @"averageEnergy": @(avgEnergy),
-        @"normalizedEnergy": @(normalizedEnergy),
+        @"confidenceScores": [self.recentSpeechProbabilities copy],
     };
 
     return @{@"speechProbability": @(speechProbability), @"info": info};
@@ -298,32 +282,42 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     
     float sum = 0.0;
     float maxAmplitude = 0.0;
+    float minSample = FLT_MAX;
+    float maxSample = -FLT_MAX;
+    
     for (NSUInteger i = 0; i < sampleCount; i++) {
         float absValue = fabsf(samples[i]);
         sum += absValue;
         if (absValue > maxAmplitude) {
             maxAmplitude = absValue;
         }
+        if (samples[i] < minSample) {
+            minSample = samples[i];
+        }
+        if (samples[i] > maxSample) {
+            maxSample = samples[i];
+        }
     }
     
-    float averageAmplitude = sum / sampleCount;
+    float meanAmplitude = sum / sampleCount;
     float maxdb = 20 * log10f(maxAmplitude);
-    float averagedb = 20 * log10f(averageAmplitude);
-
+    float meandb = 20 * log10f(meanAmplitude);
     
-    float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue];
+    // Use the threshold from detectionParams
+    float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue]? : -40.0;
     
-    // Calculate probability using a sigmoid function
+    // Adjust sigmoid function to give 80% probability when maxdb == threshold
     float sensitivity = 5.0; // Adjust this value to change the steepness of the probability curve
-    float probability = 1.0 / (1.0 + expf(-sensitivity * (maxdb - threshold)));
+    float shift = logf(1.0 / 0.8 - 1.0) / sensitivity;
+    float probability = 1.0 / (1.0 + expf(-sensitivity * (maxdb - threshold + shift)));
     
-    if (self.debugMode) {
-        NSLog(@"RNRecordSpeech - Volume Threshold: Average dB: %.2f, Max dB: %.2f, Threshold: %.2f, Probability: %.2f", averagedb, maxdb, threshold, probability);
-    }
-    
-    return @{@"speechProbability": @(probability), @"info": @{@"avaragedb": @(averagedb), @"maxdb": @(maxdb)}};
+    return @{@"speechProbability": @(probability), 
+             @"info": @{@"meandb": @(meandb), 
+                        @"maxdb": @(maxdb), 
+                        @"threshold": @(threshold),
+                        @"minSample": @(minSample),
+                        @"maxSample": @(maxSample)}};
 }
-
 
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
@@ -338,10 +332,6 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
                 self.recognitionTask = nil;
             }
             
-            if (self.debugMode) {
-                NSLog(@"RNRecordSpeech - Recording stopped");
-            }
-            
             resolve(@{@"status": @"stopped"});
         } else {
             resolve(@{@"status": @"already_stopped"});
@@ -353,13 +343,15 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
 
 - (void)cleanup
 {
-    if (self.debugMode) {
-        NSLog(@"RNRecordSpeech - Cleaning up resources");
-    }
-    
     [self.audioEngine stop];
     [self.audioEngine.inputNode removeTapOnBus:0];
     
+    if (self.recognitionTask) {
+        [self.recognitionTask cancel];
+        self.recognitionTask = nil;
+    }
+    
+    self.recognitionRequest = nil;
     self.audioEngine = nil;
     self.speechRecognizer = nil;
     

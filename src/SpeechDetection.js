@@ -12,7 +12,7 @@ export const defaultSpeechRecorderConfig = {
   // 'volume_threshold' or 'voice_activity_detection'
   detectionMethod: 'voice_activity_detection',
   detectionParams: {
-    threshold: -30.0,
+    threshold: -50.0,
   },
   sampleRate: 48000,
   channels: 1,
@@ -87,8 +87,6 @@ export class SpeechDetection extends EventEmitter {
   }
 
   onFrame = (data) => {
-
-    this.config.debug && console.log("   INFO: ", data?.info);
 
     this.onDataAvailable(data.audioData);
     const isSpeaking = data.speechProbability > 0.75;
@@ -435,8 +433,8 @@ export class SpeechDetection extends EventEmitter {
   }
   
   cleanup() {
-    this.stopRecording();
     this.removeEventListeners();
+    this.stopRecording();
     this.chunks = [];
     if (this.encoder) {
       this.encoder.flush();
