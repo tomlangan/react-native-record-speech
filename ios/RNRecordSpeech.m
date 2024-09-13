@@ -95,6 +95,13 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
             _recordingFormat = inputFormat;
         }
         
+        // Initialize speech recognizer only if voice_activity_detection is the chosen method
+        if ([self.config[@"detectionMethod"] isEqualToString:@"voice_activity_detection"]) {
+            // Initialize VAD-related properties
+            self.recentSpeechProbabilities = [NSMutableArray array];
+            self.maxProbabilityBufferSize = 10; // Adjust this value as needed
+        }
+        
         NSLog(@"Audio initialization complete. Recording format: %@", _recordingFormat);
         
         resolve(@{@"status": @"initialized"});
@@ -327,56 +334,47 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     return nil;
 }
 
+
 - (NSDictionary*)detectSpeechUsingVAD:(NSData *)audioBuffer
 {
-    if (!self.recentSpeechProbabilities) {
-        self.recentSpeechProbabilities = [NSMutableArray array];
-        self.maxProbabilityBufferSize = 10; // Adjust this value as needed
+    float *samples = (float *)audioBuffer.bytes;
+    NSUInteger sampleCount = audioBuffer.length / sizeof(float);
+    
+    // Calculate energy
+    float energy = 0.0f;
+    vDSP_measqv(samples, 1, &energy, sampleCount);
+    energy /= sampleCount;
+    
+    // Apply log scale
+    float logEnergy = 10 * log10f(energy + 1e-10);
+    
+    // Threshold for voice activity (adjust as needed)
+    float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue] ?: -50.0f;  // in dB
+    
+    // Determine if this frame contains speech
+    BOOL isSpeech = (logEnergy > threshold);
+    
+    // Update sliding window
+    [self.recentSpeechProbabilities addObject:@(isSpeech ? 1.0f : 0.0f)];
+    if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
+        [self.recentSpeechProbabilities removeObjectAtIndex:0];
     }
-
-    float speechProbability = 0.0;
-    NSDictionary *info = @{};
-
-    AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 
-                                                            sampleRate:[self.config[@"sampleRate"] doubleValue]
-                                                              channels:[self.config[@"channels"] unsignedIntegerValue]
-                                                            interleaved:NO];
-    AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format
-                                                                frameCapacity:audioBuffer.length / sizeof(float)];
-    memcpy(pcmBuffer.floatChannelData[0], audioBuffer.bytes, audioBuffer.length);
-    pcmBuffer.frameLength = audioBuffer.length / sizeof(float);
-
-    if (!self.recognitionTask) {
-        self.recognitionRequest = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
-        self.recognitionRequest.shouldReportPartialResults = YES;
-
-        __weak typeof(self) weakSelf = self;
-        self.recognitionTask = [self.speechRecognizer recognitionTaskWithRequest:self.recognitionRequest resultHandler:^(SFSpeechRecognitionResult * _Nullable result, NSError * _Nullable error) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (result) {
-                float confidence = result.bestTranscription.segments.lastObject.confidence;
-                [strongSelf.recentSpeechProbabilities addObject:@(confidence)];
-                if (strongSelf.recentSpeechProbabilities.count > strongSelf.maxProbabilityBufferSize) {
-                    [strongSelf.recentSpeechProbabilities removeObjectAtIndex:0];
-                }
-            }
-        }];
-    }
-
-    [self.recognitionRequest appendAudioPCMBuffer:pcmBuffer];
-
-    // Calculate average probability
+    
+    // Calculate speech probability as the average over the sliding window
     float sum = 0.0f;
     for (NSNumber *prob in self.recentSpeechProbabilities) {
         sum += prob.floatValue;
     }
-    speechProbability = self.recentSpeechProbabilities.count > 0 ? sum / self.recentSpeechProbabilities.count : 0.0f;
-
-    info = @{
-        @"confidenceScores": [self.recentSpeechProbabilities copy],
+    float speechProbability = self.recentSpeechProbabilities.count > 0 ? sum / self.recentSpeechProbabilities.count : 0.0f;
+    
+    return @{
+        @"speechProbability": @(speechProbability),
+        @"info": @{
+            @"energy": @(logEnergy),
+            @"threshold": @(threshold),
+            @"isSpeech": @(isSpeech)
+        }
     };
-
-    return @{@"speechProbability": @(speechProbability), @"info": info};
 }
 
 - (NSDictionary*)detectSpeechUsingVolumeThreshold:(NSData *)audioBuffer
