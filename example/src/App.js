@@ -296,7 +296,7 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
   recordingsList: {
-    maxHeight: 200, // Adjust this value as needed
+    height: 300, // Adjust this value as needed
     marginBottom: 16,
   },
   settingsScrollView: {
