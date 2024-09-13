@@ -4,3 +4,8 @@ extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autoli
 rootProject.name = 'RecordSpeechExample'
 include ':app'
 includeBuild('../node_modules/@react-native/gradle-plugin')
+include ':react-native-record-speech'
+project(':react-native-record-speech').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-record-speech/android')
+
+include ':react-native-fs'
+project(':react-native-fs').projectDir = new File(rootProject.projectDir, '../node_modules/react-native-fs/android')
