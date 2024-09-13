@@ -334,7 +334,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     return nil;
 }
 
-
 - (NSDictionary*)detectSpeechUsingVAD:(NSData *)audioBuffer
 {
     float *samples = (float *)audioBuffer.bytes;
@@ -348,31 +347,58 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     // Apply log scale
     float logEnergy = 10 * log10f(energy + 1e-10);
     
-    // Threshold for voice activity (adjust as needed)
-    float threshold = [self.config[@"detectionParams"][@"threshold"] floatValue] ?: -50.0f;  // in dB
+    // Update energy history
+    static NSMutableArray<NSNumber *> *energyHistory = nil;
+    static const NSUInteger historySize = 20;  // Reduced history size for shorter recordings
     
-    // Determine if this frame contains speech
-    BOOL isSpeech = (logEnergy > threshold);
-    
-    // Update sliding window
-    [self.recentSpeechProbabilities addObject:@(isSpeech ? 1.0f : 0.0f)];
-    if (self.recentSpeechProbabilities.count > self.maxProbabilityBufferSize) {
-        [self.recentSpeechProbabilities removeObjectAtIndex:0];
+    if (!energyHistory) {
+        energyHistory = [NSMutableArray arrayWithCapacity:historySize];
     }
     
-    // Calculate speech probability as the average over the sliding window
+    [energyHistory addObject:@(logEnergy)];
+    if (energyHistory.count > historySize) {
+        [energyHistory removeObjectAtIndex:0];
+    }
+    
+    // Calculate statistics
     float sum = 0.0f;
-    for (NSNumber *prob in self.recentSpeechProbabilities) {
-        sum += prob.floatValue;
+    float sumSquares = 0.0f;
+    for (NSNumber *e in energyHistory) {
+        float value = e.floatValue;
+        sum += value;
+        sumSquares += value * value;
     }
-    float speechProbability = self.recentSpeechProbabilities.count > 0 ? sum / self.recentSpeechProbabilities.count : 0.0f;
+    
+    float mean = sum / energyHistory.count;
+    float variance = (sumSquares / energyHistory.count) - (mean * mean);
+    variance = fmaxf(variance, 0.0f);
+    float stdDev = sqrtf(variance);
+    
+    // Calculate z-score with increased sensitivity
+    float zScore = 0.0f;
+    if (stdDev > 1e-10) {
+        zScore = (logEnergy - mean) / stdDev;
+        zScore *= 1.5f;  // Increase sensitivity
+    }
+    
+    // Calculate speech probability
+    float speechProbability = 1.0f / (1.0f + expf(-zScore));
+    
+    // Adjust probability curve to reach higher values more easily
+    speechProbability = powf(speechProbability, 0.7f);
+    
+    // Ensure speechProbability is a valid number between 0 and 1
+    speechProbability = isnan(speechProbability) ? 0.0f : speechProbability;
+    speechProbability = fmaxf(0.0f, fminf(1.0f, speechProbability));
     
     return @{
         @"speechProbability": @(speechProbability),
         @"info": @{
             @"energy": @(logEnergy),
-            @"threshold": @(threshold),
-            @"isSpeech": @(isSpeech)
+            @"mean": @(mean),
+            @"stdDev": @(stdDev),
+            @"zScore": @(zScore),
+            @"instantProbability": @(speechProbability)
         }
     };
 }
