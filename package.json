@@ -1,6 +1,6 @@
 {
   "name": "react-native-record-speech",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "React Native library for detecting and recording speech",
   "source": "./src/index.js",
   "main": "./lib/commonjs/index.js",
