@@ -56,10 +56,16 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         double sampleRate = inputFormat.sampleRate;
         NSUInteger channels = [self.config[@"channels"] unsignedIntegerValue];
         
+        if (sampleRate == 0) {
+            sampleRate = 48000.0; // Default sample rate
+        }
+
         // Ensure we're using a valid channel count
         if (channels == 0 || channels > 2) {
             channels = inputFormat.channelCount;
         }
+
+
 
         NSLog(@"Input format: %@", inputFormat);
         NSLog(@"Sample rate: %f, Channels: %lu", sampleRate, (unsigned long)channels);
