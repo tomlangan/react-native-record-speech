@@ -60,6 +60,9 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         if (channels == 0 || channels > 2) {
             channels = inputFormat.channelCount;
         }
+
+        NSLog(@"Input format: %@", inputFormat);
+        NSLog(@"Sample rate: %f, Channels: %lu", sampleRate, (unsigned long)channels);
         
         _recordingFormat = [[AVAudioFormat alloc] 
                             initWithCommonFormat:AVAudioPCMFormatFloat32
