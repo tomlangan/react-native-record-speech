@@ -1,5 +1,6 @@
 import {
   arrayBufferToBase64,
+  base64ToArrayBuffer,
   concatenateBase64BlobsToArrayBuffer,
   calculateBase64ByteLength,
 } from "./utils/bufferutils";
@@ -16,7 +17,7 @@ export const defaultSpeechRecorderConfig = {
   },
   sampleRate: 48000,
   channels: 1,
-  bitsPerSample: 16,
+  outputFormat: 'mp3',
   wavFile: 'audio.wav',
   continuousRecording: false,
   onlyRecordOnSpeaking: true,
@@ -73,6 +74,11 @@ export class SpeechDetection extends EventEmitter {
         ...(config.features || {})
       }
     };
+
+    // Only MP3 format is supported
+    if (this.config.outputFormat !== 'mp3') {
+      throw new Error('Only MP3 output format is supported');
+    }
 
     await RNRecordSpeech.init(this.config);
 
@@ -292,12 +298,10 @@ export class SpeechDetection extends EventEmitter {
   }
 
   onDataAvailable(data) {
-    if (data === undefined || data === null || typeof data !== 'string') {
-      console.error('Received data is undefined or null');
-      return;
+    // data is a base64 encoded string
+    if (typeof data !== 'string') {
+      throw new Error('data must be a base64 encoded string');
     }
-
-    let finalData = data;
 
     const addChunkToCircularBuffer = (chunk) => {
       if (this.chunks.length > INTRO_OUTRO_CHUNK_COUNT) {
@@ -318,7 +322,7 @@ export class SpeechDetection extends EventEmitter {
           }
           this.trailingChunksToAdd--;
           console.log("TRAILING CHUNKS LEFT: ", this.trailingChunksToAdd);
-          this.chunks.push(finalData);
+          this.chunks.push(data);
           if (this.trailingChunksToAdd === 0) {
             this.setSpeakingState('no_speech');
             this.onSendSpeechData();
@@ -326,20 +330,20 @@ export class SpeechDetection extends EventEmitter {
           break;
         case 'speaking':
         case 'waiting_for_min_duration':
-          addChunkToRecording(finalData);
+          addChunkToRecording(data);
           break;
         case 'waiting_for_silence_timeout':
-          this.tempChunks.push(finalData);
+          this.tempChunks.push(data);
           break;
         case 'no_speech':
-          addChunkToCircularBuffer(finalData);
+          addChunkToCircularBuffer(data);
           break;
         default:
           console.error('Unexpected speaking state in onDataAvailable:', this.speakingState);
           throw new Error('Unexpected speaking state in onDataAvailable: ' + this.speakingState);
       }
     } else {
-      addChunkToRecording(finalData);
+      addChunkToRecording(data);
 
       if (this.trailingChunksToAdd > 0) {
         this.trailingChunksToAdd--;
@@ -404,27 +408,43 @@ export class SpeechDetection extends EventEmitter {
         this.chunks = [];
         this.tempChunks = [];
 
-        const arrayBuffer = await concatenateBase64BlobsToArrayBuffer(allChunks);
-        const mp3buffer = this.encoder.encodeBuffer(new Int16Array(arrayBuffer));
+        
+        // Concatenate all Base64 chunks into a single Base64 string
+        let base64Data = allChunks.join('');
+
+        if (this.config.features.normalization) {
+          base64Data = await RNRecordSpeech.normalizeAudio(base64Data, this.config.inputGain);
+        }
+
+        // Convert Float32 data to Int16 in Base64 format
+        const int16Base64Buffer = await RNRecordSpeech.convertFloat32ToInt16(base64Data);
+
+        // Decode the Base64 string to a Uint8Array for MP3 encoding
+        const int16ArrayBuffer = base64ToArrayBuffer(int16Base64Buffer);
+        const int16Array = new Int16Array(int16ArrayBuffer);
+
+        // Encode the Int16 audio data to MP3
+        const mp3buffer = this.encoder.encodeBuffer(int16Array);
+
         const base64inputbuffer = arrayBufferToBase64(mp3buffer);
+
         const fileBlob = await this.createFileObjectFromBase64(base64inputbuffer, "audio/mp3");
 
         const audioData = {
-        data: fileBlob,
-        mimeType: 'audio/mp3',
-        size: calculateBase64ByteLength(base64inputbuffer),
-        source: 'blob'
+          data: fileBlob,
+          mimeType: 'audio/mp3',
+          size: calculateBase64ByteLength(base64inputbuffer),
+          source: 'blob'
         };
 
-        console.log('Sending speech data:', this.chunks.length, audioData.size);
         this.emit('dataBlob', audioData, { isFinal: true });
 
         if (this.silenceStartTime) {
-        const silenceDuration = Date.now() - this.silenceStartTime;
-        if (silenceDuration > this.longestSilenceDuration) {
-            this.longestSilenceDuration = silenceDuration;
-            this.emit('longestSilenceDuration', this.longestSilenceDuration);
-        }
+          const silenceDuration = Date.now() - this.silenceStartTime;
+          if (silenceDuration > this.longestSilenceDuration) {
+              this.longestSilenceDuration = silenceDuration;
+              this.emit('longestSilenceDuration', this.longestSilenceDuration);
+          }
         }
     }
 

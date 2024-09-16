@@ -47,7 +47,6 @@ const App = () => {
       speechDetectionRef.current.on('mostRecentSpeakingDuration', setMostRecentSpeakingDuration);
       speechDetectionRef.current.on('longestSilenceDuration', setLongestSilenceDuration);
       speechDetectionRef.current.on('dataBlob', (audioData) => {
-        console.log('Received dataBlob event:', audioData);
         const audioWithTimestamp = {
           ...audioData,
           timestamp: new Date().toISOString(),

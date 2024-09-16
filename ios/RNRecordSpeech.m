@@ -4,13 +4,10 @@
 
 @implementation RNRecordSpeech {
     NSUInteger _frameCounter;
-    AVAudioUnitEQ *_normalizationEQ;
-    float _runningMaxAmplitude;
-    NSUInteger _sampleCounter;
-    NSUInteger _normalizationInterval;
     AVAudioMixerNode *_mixerNode;
     AVAudioFormat *_recordingFormat;
 }
+
 
 RCT_EXPORT_MODULE()
 
@@ -35,26 +32,6 @@ RCT_EXPORT_MODULE()
         return [isEnabled boolValue];
     }
     return NO;
-}
-
-- (NSData *)convertFloat32ToInt16:(float *)floatData length:(NSUInteger)length {
-    NSMutableData *int16Data = [NSMutableData dataWithLength:length * sizeof(int16_t)];
-    int16_t *int16Samples = (int16_t *)int16Data.bytes;
-    
-    // Create a temporary float buffer to hold the scaled values
-    float *scaledFloatData = (float *)malloc(length * sizeof(float));
-    
-    // Scale floating-point values to 16-bit integer range
-    float scalingFactor = 32767.0f;
-    vDSP_vsmul(floatData, 1, &scalingFactor, scaledFloatData, 1, length);
-    
-    // Convert scaled floating-point values to 16-bit integers
-    vDSP_vfixr16(scaledFloatData, 1, int16Samples, 1, length);
-    
-    // Free the temporary float buffer
-    free(scaledFloatData);
-    
-    return int16Data;
 }
 
 - (BOOL)isInputGainSettable {
@@ -181,23 +158,6 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         lastNode = eqNode;
     }
     
-    if ([self isFeatureEnabled:@"normalization"]) {
-        // Add normalization EQ
-        _normalizationEQ = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
-        [self.audioEngine attachNode:_normalizationEQ];
-        [self.audioEngine connect:lastNode to:_normalizationEQ format:_recordingFormat];
-        
-        // Configure normalization
-        AVAudioUnitEQFilterParameters *normalizationFilter = _normalizationEQ.bands[0];
-        normalizationFilter.filterType = AVAudioUnitEQFilterTypeParametric;
-        normalizationFilter.frequency = 1000.0; // Center frequency
-        normalizationFilter.bandwidth = 2.0;
-        normalizationFilter.gain = 0.0; // Initial gain
-        normalizationFilter.bypass = NO;
-        
-        lastNode = _normalizationEQ;
-    }
-    
     // Connect the last node to a mixer node
     _mixerNode = [[AVAudioMixerNode alloc] init];
     [self.audioEngine attachNode:_mixerNode];
@@ -229,13 +189,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         }
 
         _frameCounter = 0; // Initialize frame counter
-        
-        // Initialize normalization variables
-        if ([self isFeatureEnabled:@"normalization"]) {
-            _runningMaxAmplitude = 0.0;
-            _sampleCounter = 0;
-            _normalizationInterval = 1 * _recordingFormat.sampleRate; // best for 2-3 second recordings
-        }
 
         NSTimeInterval timeSlice = [self.config[@"timeSlice"] doubleValue] / 1000.0;
         NSUInteger samplesPerSlice = timeSlice * _recordingFormat.sampleRate;
@@ -246,22 +199,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
         [self.audioEngine.inputNode installTapOnBus:0 bufferSize:1024 format:_recordingFormat block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
            NSUInteger numberOfFrames = buffer.frameLength;
             float *samples = buffer.floatChannelData[0];
-
-            // check for the normalization feature flag
-            if ([self isFeatureEnabled:@"normalization"]) {
-                // Calculate max amplitude for normalization
-                float maxAmplitude = 0.0;
-                vDSP_maxmgv(samples, 1, &maxAmplitude, numberOfFrames);
-                self->_runningMaxAmplitude = MAX(self->_runningMaxAmplitude, maxAmplitude);
-                
-                self->_sampleCounter += numberOfFrames;
-                if (self->_sampleCounter >= self->_normalizationInterval) {
-                    // Adjust normalization every 5 seconds
-                    [self adjustNormalization:self->_runningMaxAmplitude];
-                    self->_runningMaxAmplitude = 0.0;
-                    self->_sampleCounter = 0;
-                }
-            }
             
             [audioBuffer appendBytes:samples length:numberOfFrames * sizeof(float)];
             sampleCount += numberOfFrames;
@@ -271,19 +208,8 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
 
                 NSDictionary* detectionResults = [self detectSpeechInBuffer:audioBuffer];
                 
-                NSString *base64AudioData = nil;
-                if ([self.config[@"bitsPerSample"] unsignedIntegerValue] == 16) {
-
-                    NSData *int16AudioData = [self convertFloat32ToInt16:(float *)audioBuffer.bytes length:sampleCount];
-
-                    base64AudioData = [int16AudioData base64EncodedStringWithOptions:0];
-                } else {
-                    NSLog(@"Using float32 audio data");
-                    // Default to float32 if bitsPerSample is not 16 or not specified
-                    base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
-                }
-
-                NSLog(@"base64AudioData length: %lu", (unsigned long)[base64AudioData length]);
+                // Convert NSData to base64 encoded string
+                NSString *base64AudioData = [audioBuffer base64EncodedStringWithOptions:0];
 
                 NSDictionary *frameData = @{
                     @"audioData": base64AudioData,
@@ -303,22 +229,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     } @catch (NSException *exception) {
         reject(@"StartError", exception.reason, nil);
     }
-}
-
-- (void)adjustNormalization:(float)maxAmplitude {
-    if (![self isFeatureEnabled:@"normalization"] || !_normalizationEQ) {
-        return;
-    }
-    
-    float targetAmplitude = 0.8; 
-    float gainAdjustment = 20 * log10f(targetAmplitude / maxAmplitude);
-    
-    // Limit the gain adjustment to avoid excessive amplification
-    gainAdjustment = MIN(gainAdjustment, 30.0); 
-    gainAdjustment = MAX(gainAdjustment, -20.0);
-    
-    AVAudioUnitEQFilterParameters *normalizationFilter = _normalizationEQ.bands[0];
-    normalizationFilter.gain = gainAdjustment;
 }
 
 - (NSDictionary*)detectSpeechInBuffer:(NSData *)audioBuffer
@@ -470,7 +380,6 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     }
     
     _mixerNode = nil;
-    _normalizationEQ = nil;
     
     // Deactivate audio session
     NSError *error = nil;
@@ -495,6 +404,76 @@ RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve
 
     } @catch (NSException *exception) {
         reject(@"StopError", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(normalizeAudio:(NSString *)base64AudioData
+                  withGain:(float)gain
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        // Decode Base64 string to NSData
+        NSData *audioBuffer = [[NSData alloc] initWithBase64EncodedString:base64AudioData options:0];
+
+        NSUInteger sampleCount = audioBuffer.length / sizeof(float);
+        float *samples = (float *)audioBuffer.bytes;
+
+        // Find max amplitude
+        float maxAmplitude = 0.0f;
+        vDSP_maxmgv(samples, 1, &maxAmplitude, sampleCount);
+
+        // Calculate normalization factor (avoid division by zero)
+        float normalizationFactor = (maxAmplitude > 0.0001f) ? (1.0f / maxAmplitude) : 1.0f;
+
+        // Allocate a new buffer for the normalized samples
+        NSMutableData *normalizedData = [NSMutableData dataWithLength:audioBuffer.length];
+        float *normalizedSamples = (float *)normalizedData.bytes;
+
+        // Apply normalization and gain
+        float combinedFactor = normalizationFactor * gain;
+        vDSP_vsmul(samples, 1, &combinedFactor, normalizedSamples, 1, sampleCount);
+
+        // After processing, encode the result back to Base64
+        NSString *base64NormalizedData = [normalizedData base64EncodedStringWithOptions:0];
+
+        resolve(base64NormalizedData);
+    } @catch (NSException *exception) {
+        reject(@"NormalizationError", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(convertFloat32ToInt16:(NSString *)base64AudioData
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        // Decode Base64 string to NSData
+        NSData *audioData = [[NSData alloc] initWithBase64EncodedString:base64AudioData options:0];
+
+        NSUInteger sampleCount = audioData.length / sizeof(float);
+        float *floatSamples = (float *)audioData.bytes;
+        
+        // malloc a new buffer for the 16-bit samples
+        NSMutableData *int16Data = [NSMutableData dataWithLength:sampleCount * sizeof(SInt16)];
+        SInt16 *int16Samples = (SInt16 *)int16Data.bytes;
+        
+        // allocate a buffer for the scaled samples
+        float *scaledSamples = (float *)malloc(sampleCount * sizeof(float));
+
+        // Scale and convert floating-point values to 16-bit integers
+        float scalingFactor = 32767.0f;
+        vDSP_vsmul(floatSamples, 1, &scalingFactor, scaledSamples, 1, sampleCount);
+        vDSP_vfixr16(scaledSamples, 1, int16Samples, 1, sampleCount);
+
+        free(scaledSamples);
+        
+        // After processing, encode the result back to Base64
+        NSString *base64Int16Data = [int16Data base64EncodedStringWithOptions:0];
+        
+        resolve(base64Int16Data);
+    } @catch (NSException *exception) {
+        reject(@"ConversionError", exception.reason, nil);
     }
 }
 

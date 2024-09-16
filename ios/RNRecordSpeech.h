@@ -24,6 +24,15 @@
 - (void)stop:(RCTPromiseResolveBlock)resolve
     rejecter:(RCTPromiseRejectBlock)reject;
 
+- (void)normalizeAudio:(NSString *)base64AudioData
+             withGain:(float)gain
+             resolver:(RCTPromiseResolveBlock)resolve
+             rejecter:(RCTPromiseRejectBlock)reject;
+
+- (void)convertFloat32ToInt16:(NSString *)base64AudioData
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject;
+
 - (void)cleanup;
 - (void)stopInternal;
 

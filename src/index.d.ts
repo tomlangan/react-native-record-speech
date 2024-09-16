@@ -1,6 +1,5 @@
 export type RNRecordSpeechConfig = {
   sampleRate?: number;
-  bitsPerSample?: number;
   channels?: number;
   wavFile?: string;
   monitorInterval?: number;
