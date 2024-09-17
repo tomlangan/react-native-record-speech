@@ -46,50 +46,10 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         self.config = config;
         self.debugMode = [config[@"debug"] boolValue];
         
-        // Initialize audio engine
-        self.audioEngine = [[AVAudioEngine alloc] init];
-        
-        // Configure recording format
-        AVAudioInputNode *inputNode = self.audioEngine.inputNode;
-        AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
-        
-        double sampleRate = inputFormat.sampleRate;
-        NSUInteger channels = [self.config[@"channels"] unsignedIntegerValue];
-        
-        if (sampleRate == 0) {
-            sampleRate = 48000.0; // Default sample rate
+        if (self.debugMode) {
+            NSLog(@"Initializing RNRecordSpeech with config: %@", config);
         }
 
-        // Ensure we're using a valid channel count
-        if (channels == 0 || channels > 2) {
-            channels = inputFormat.channelCount;
-        }
-
-
-
-        NSLog(@"Input format: %@", inputFormat);
-        NSLog(@"Sample rate: %f, Channels: %lu", sampleRate, (unsigned long)channels);
-        
-        _recordingFormat = [[AVAudioFormat alloc] 
-                            initWithCommonFormat:AVAudioPCMFormatFloat32
-                            sampleRate:sampleRate 
-                            channels:channels 
-                            interleaved:NO];
-        
-        if (!_recordingFormat) {
-            NSLog(@"Failed to create valid recording format. Using input format.");
-            _recordingFormat = inputFormat;
-        }
-        
-        // Initialize speech recognizer only if voice_activity_detection is the chosen method
-        if ([self.config[@"detectionMethod"] isEqualToString:@"voice_activity_detection"]) {
-            // Initialize VAD-related properties
-            self.recentSpeechProbabilities = [NSMutableArray array];
-            self.maxProbabilityBufferSize = 10; // Adjust this value as needed
-        }
-        
-        NSLog(@"Audio initialization complete. Recording format: %@", _recordingFormat);
-        
         resolve(@{@"status": @"initialized"});
     } @catch (NSException *exception) {
         reject(@"InitializationError", exception.reason, nil);
@@ -154,8 +114,14 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     
     if ([self isFeatureEnabled:@"noiseReduction"]) {
         AVAudioUnitEQ *eqNode = [[AVAudioUnitEQ alloc] initWithNumberOfBands:1];
+
+        AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
+        NSLog(@"Attaching AudioEngine with input node with format: %@", inputFormat);
+
         [self.audioEngine attachNode:eqNode];
         [self.audioEngine connect:lastNode to:eqNode format:_recordingFormat];
+
+        NSLog(@"AudioEngine attached");
         
         // Configure noise reduction
         AVAudioUnitEQFilterParameters *noiseReductionFilter = eqNode.bands[0];
@@ -180,13 +146,44 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
     @try {
-        if ([self.audioEngine isRunning]) {
-            // call stopInternal to clean up the audio engine
+        if (self.audioEngine && [self.audioEngine isRunning]) {
             [self stopInternal];
         }
         
         // Set up audio session
         [self setupAudioSession];
+        
+        // Initialize audio engine
+        self.audioEngine = [[AVAudioEngine alloc] init];
+        
+        // Configure recording format
+        AVAudioInputNode *inputNode = self.audioEngine.inputNode;
+        AVAudioFormat *inputFormat = [inputNode inputFormatForBus:0];
+        
+        double sampleRate = inputFormat.sampleRate;
+        NSUInteger channels = [self.config[@"channels"] unsignedIntegerValue];
+        
+        NSLog(@"SYSTEM INPUT FORMAT: %@", inputFormat);
+
+        NSLog(@"USING: Sample rate: %f, Channels: %lu", inputFormat.sampleRate, inputFormat.channelCount);
+        
+        _recordingFormat = [[AVAudioFormat alloc] 
+                            initWithCommonFormat:AVAudioPCMFormatFloat32
+                            sampleRate:inputFormat.sampleRate 
+                            channels:inputFormat.channelCount 
+                            interleaved:NO];
+        
+        if (!_recordingFormat) {
+            NSLog(@"Failed to create valid recording format. Using input format.");
+            _recordingFormat = inputFormat;
+        }
+        
+        // Initialize speech recognizer only if voice_activity_detection is the chosen method
+        if ([self.config[@"detectionMethod"] isEqualToString:@"voice_activity_detection"]) {
+            // Initialize VAD-related properties
+            self.recentSpeechProbabilities = [NSMutableArray array];
+            self.maxProbabilityBufferSize = 10; // Adjust this value as needed
+        }
         
         // Set up the audio processing chain
         [self setupAudioProcessingChain];
@@ -233,8 +230,22 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
                 sampleCount = 0;
             }
         }];
+
+        if (self.debugMode) {
+            NSLog(@"Audio initialization complete. Recording format: %@", _recordingFormat);
+        }
+
+        // Return an object containing the recording format
+        NSDictionary *result = @{
+            @"status": @"started",
+            @"recordingFormat": @{
+                @"sampleRate": @(_recordingFormat.sampleRate),
+                @"channels": @(_recordingFormat.channelCount),
+                @"interleaved": @(_recordingFormat.isInterleaved)
+            }
+        };
         
-        resolve(@{@"status": @"started"});
+        resolve(result);
     } @catch (NSException *exception) {
         reject(@"StartError", exception.reason, nil);
     }
@@ -369,7 +380,12 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
 //Define internal routine stopInternal
 - (void)stopInternal
 {
+    if (self.audioEngine == nil) {
+        return;
+    }
+
     if (![self.audioEngine isRunning]) {
+        self.audioEngine = nil;
         return;
     }
 
@@ -396,6 +412,8 @@ RCT_EXPORT_METHOD(start:(RCTPromiseResolveBlock)resolve
     if (error) {
         NSLog(@"Error deactivating audio session: %@", error.localizedDescription);
     }
+
+    self.audioEngine = nil;
 }
 
 RCT_EXPORT_METHOD(stop:(RCTPromiseResolveBlock)resolve

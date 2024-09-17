@@ -15,8 +15,6 @@ export const defaultSpeechRecorderConfig = {
   detectionParams: {
     threshold: -50.0,
   },
-  sampleRate: 48000,
-  channels: 1,
   outputFormat: 'mp3',
   wavFile: 'audio.wav',
   continuousRecording: false,
@@ -63,6 +61,7 @@ export class SpeechDetection extends EventEmitter {
     this.mostRecentSpeakingDuration = 0;
     this.longestSilenceDuration = 0;
     this.unregisterCallback = null;
+    this.sampleFormat = {};
   }
 
   async init(config = {}) {
@@ -81,10 +80,6 @@ export class SpeechDetection extends EventEmitter {
     }
 
     await RNRecordSpeech.init(this.config);
-
-    if (!this.encoder) {
-      this.encoder = new lamejs.Mp3Encoder(1, this.config.sampleRate, 128);
-    }
   }
 
   setupEventListeners() {
@@ -110,7 +105,28 @@ export class SpeechDetection extends EventEmitter {
       try {
         this.setupEventListeners();
 
-        await RNRecordSpeech.start();
+        const recordingInfo = await RNRecordSpeech.start();
+
+        if (this.config.debug) {
+          console.log('Record start():', recordingInfo);
+        }
+
+        if (!this.encoder || (
+              this.sampleFormat.channels !== recordingInfo.recordingFormat.channels ||
+              this.sampleFormat.sampleRate !== recordingInfo.recordingFormat.sampleRate
+          )) {
+            
+          // If there is no encoder, or the sample format has changed, create a new encoder
+          this.encoder = new lamejs.Mp3Encoder(this.sampleFormat.channels, this.sampleFormat.sampleRate, 128);
+        }
+
+        this.sampleFormat = {
+          channels: recordingInfo.recordingFormat.channels,
+          sampleRate: recordingInfo.recordingFormat.sampleRate,
+        }
+
+        this.encoder = new lamejs.Mp3Encoder(this.sampleFormat.channels, this.sampleFormat.sampleRate, 128);
+
         this.recording = true;
         this.emit('recording', true);
         if (!this.config.onlyRecordOnSpeaking) {

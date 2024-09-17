@@ -25,10 +25,12 @@ console.log("eventEmitter", eventEmitter);
 
 class RNRecordSpeech {
   constructor() {
+    this.initialized = false;
   }
 
   async init(config) {
      await RNRecordSpeechModule.init(config);
+      this.initialized = true;
   }
 
   on(event, callback) {
@@ -41,6 +43,10 @@ class RNRecordSpeech {
   }
 
   start() {
+    if (!this.initialized) {
+      throw new Error('You must call init() before calling start()');
+    }
+
     return RNRecordSpeechModule.start();
   }
 
