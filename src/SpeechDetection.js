@@ -383,11 +383,7 @@ export class SpeechDetection extends EventEmitter {
 
     await RNFS.writeFile(rawBufferFile, audioBuffer, 'base64');
 
-    let fileUri = Platform.select({
-      ios: rawBufferFile,
-      android: 'file://' + rawBufferFile,
-      default: 'file://' + rawBufferFile,
-    });
+    let fileUri = Platform.OS === 'ios' ? rawBufferFile : 'file://' + rawBufferFile;
 
     var file = { uri: fileUri, name: fileName, type: mime_type };
 
