@@ -8,6 +8,7 @@ import RNFS from 'react-native-fs';
 import { EventEmitter } from './utils/eventemitter';
 import RNRecordSpeech from './RNRecordSpeech';
 import lamejs from 'lamejs';
+import { Platform } from 'react-native';
 
 export const defaultSpeechRecorderConfig = {
   // 'volume_threshold' or 'voice_activity_detection'
