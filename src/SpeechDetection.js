@@ -153,6 +153,7 @@ export class SpeechDetection extends EventEmitter {
 
   async onStopRecording() {
     if (this.recording) {
+      this.setSpeakingState('no_speech');
       await RNRecordSpeech.stop();
       this.recording = false;
       this.emit('recording', false);
