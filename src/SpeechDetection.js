@@ -176,6 +176,7 @@ export class SpeechDetection extends EventEmitter {
       if (!this.speaking) {
         this.speaking = true;
         this.setSpeakingState('speaking');
+        this.emit('silence', false);
         this.emit('speaking', true);
         if (this.config.onlyRecordOnSpeaking) {
           this.startRecording();
@@ -194,6 +195,7 @@ export class SpeechDetection extends EventEmitter {
 
   async onSilenceTimeout() {
     this.config.debug && console.log("Silence timeout");
+
     if (this.speaking) {
       this.speaking = false;
       this.emit('speaking', false);
@@ -209,7 +211,6 @@ export class SpeechDetection extends EventEmitter {
     this.trailingChunksToAdd = INTRO_OUTRO_CHUNK_COUNT;
     if (this.tempChunks.length > 0) {
       const chunksToAdd = this.tempChunks.length > this.trailingChunksToAdd ? this.tempChunks.slice(0, this.trailingChunksToAdd) : this.tempChunks;
-      console.log("onSilenceTimeout: GRABBING TEMP CHUNKS: ", chunksToAdd.length);
       this.chunks = [...this.chunks, ...chunksToAdd];
       this.trailingChunksToAdd -= chunksToAdd.length;
     }
@@ -218,7 +219,6 @@ export class SpeechDetection extends EventEmitter {
       this.setSpeakingState('no_speech');
       this.onSendSpeechData();
     } else {
-      console.log("onSilenceTimeout: WAITING FOR FINAL CHUNK");
       this.setSpeakingState('getting_final_chunks');
       this.setFinalDataCallback();
     }
@@ -228,6 +228,7 @@ export class SpeechDetection extends EventEmitter {
   };
 
   startSilenceTimer() {
+    this.emit('silence', true);
     this.cancelSilenceTimer();
     this.silenceStartTime = Date.now();
     this.silenceTimer = setTimeout(() => {
@@ -236,6 +237,7 @@ export class SpeechDetection extends EventEmitter {
   }
 
   cancelSilenceTimer() {
+    this.emit('silence', false);
     if (this.silenceTimer) {
       this.config.debug && console.log("Cancel silence timer");
       clearTimeout(this.silenceTimer);
@@ -339,7 +341,6 @@ export class SpeechDetection extends EventEmitter {
             throw new Error('Unexpected state: getting_final_chunks but not waiting for final chunk');
           }
           this.trailingChunksToAdd--;
-          console.log("TRAILING CHUNKS LEFT: ", this.trailingChunksToAdd);
           this.chunks.push(data);
           if (this.trailingChunksToAdd === 0) {
             this.setSpeakingState('no_speech');
@@ -411,7 +412,6 @@ export class SpeechDetection extends EventEmitter {
   }
 
   onSendSpeechData = async () => {
-    console.log('onSendSpeechData length=', this.chunks.length);
 
     this.cancelFinalDataCallback();
 
@@ -462,7 +462,6 @@ export class SpeechDetection extends EventEmitter {
         }
     }
 
-    console.log("Continuous recording: ", this.config.continuousRecording);
     if (!this.config.continuousRecording) {
       await this.onStopRecording();
     }    
