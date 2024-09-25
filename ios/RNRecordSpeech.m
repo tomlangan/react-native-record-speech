@@ -74,6 +74,8 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
     }
 
+    [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
+
     // Disable microphone audio routing to output
     [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&audioSessionError];
     if (audioSessionError) {
