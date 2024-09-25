@@ -26,6 +26,9 @@ const App = () => {
 
   useEffect(() => {
     const initSpeechDetection = async () => {
+
+      Sound.setCategory('Playback', false);
+
       speechDetectionRef.current = new SpeechDetection();
       await speechDetectionRef.current.init({
         ...defaultSpeechRecorderConfig,
@@ -80,7 +83,7 @@ const App = () => {
       setCurrentlyPlaying(null);
     }
 
-    Sound.setCategory('Playback');
+    Sound.setCategory('Playback', false);
     
     // Create a new Sound instance
     const sound = new Sound(audioData.data.uri, '', (error) => {
