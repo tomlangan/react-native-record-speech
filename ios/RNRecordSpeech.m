@@ -65,7 +65,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     AVAudioSessionCategoryOptions options = 
         AVAudioSessionCategoryOptionDefaultToSpeaker |
         AVAudioSessionCategoryOptionAllowBluetooth |
-        AVAudioSessionCategoryOptionMixWithOthers;
+        AVAudioSessionCategoryOptionDuckOthers;
     
     [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
                   withOptions:options
