@@ -61,6 +61,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     NSError *audioSessionError = nil;
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
     
+    /*
     // Use PlayAndRecord category with specific options
     AVAudioSessionCategoryOptions options = 
         AVAudioSessionCategoryOptionDefaultToSpeaker |
@@ -73,17 +74,8 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
     if (audioSessionError) {
         [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
     }
-    
-    // Set audio session mode based on echo cancellation setting
-    if ([self isFeatureEnabled:@"echoCancellation"]) {
-        [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
-    } else {
-        [audioSession setMode:AVAudioSessionModeMeasurement error:&audioSessionError];
-    }
-    if (audioSessionError) {
-        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-    }
-    
+    */
+
     // Disable microphone audio routing to output
     [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&audioSessionError];
     if (audioSessionError) {
@@ -102,10 +94,10 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         }
     }
 
-    [audioSession setActive:YES error:&audioSessionError];
-    if (audioSessionError) {
-        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-    }
+    //[audioSession setActive:YES error:&audioSessionError];
+    //if (audioSessionError) {
+    //    [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
+    //}
 }
 
 - (void)setupAudioProcessingChain {
