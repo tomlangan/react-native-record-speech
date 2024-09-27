@@ -72,6 +72,10 @@ const App = () => {
     if (isRecording) {
       speechDetectionRef.current.stopRecording();
     } else {
+
+      Sound.setActive(true);
+      Sound.setCategory('PlayAndRecord', false);
+
       speechDetectionRef.current.startRecording();
     }
   };

@@ -60,21 +60,6 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
 {
     NSError *audioSessionError = nil;
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-    
-    // Use PlayAndRecord category with specific options
-    AVAudioSessionCategoryOptions options = 
-        AVAudioSessionCategoryOptionDefaultToSpeaker |
-        AVAudioSessionCategoryOptionAllowBluetooth |
-        AVAudioSessionCategoryOptionDuckOthers;
-    
-    [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
-                  withOptions:options
-                        error:&audioSessionError];
-    if (audioSessionError) {
-        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
-    }
-
-    [audioSession setMode:AVAudioSessionModeVoiceChat error:&audioSessionError];
 
     // Disable microphone audio routing to output
     [audioSession overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&audioSessionError];
@@ -92,11 +77,6 @@ RCT_EXPORT_METHOD(init:(NSDictionary *)config
         if (!success) {
             NSLog(@"Failed to set input gain: %@", gainError.localizedDescription);
         }
-    }
-
-    [audioSession setActive:YES error:&audioSessionError];
-    if (audioSessionError) {
-        [self throwException:@"AudioSessionError" reason:audioSessionError.localizedDescription];
     }
 }
 
